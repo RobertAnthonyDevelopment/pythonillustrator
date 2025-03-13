@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, colorchooser, filedialog
-from PIL import Image, ImageTk, ImageDraw, ImageFont  # For image-based layer or text manipulations
+from PIL import Image, ImageTk, ImageDraw, ImageFont  # For image-based layers or text manipulations
 
 # Constants for default values
 DEFAULT_BRUSH_SIZE = 3
@@ -12,11 +12,11 @@ UNDO_STACK_LIMIT = 10
 class Layer:
     """
     Represents a layer in the editor.
-    Each layer can have:
-      - A list of shapes (canvas items or reference to data)
-      - Visibility (on/off)
-      - Lock state
-      - Name
+    Each layer has:
+      - name (string)
+      - visible (bool)
+      - locked (bool; omitted in this example or set as desired)
+      - a list of canvas items [(item_id, shape_type), ...]
     """
     def __init__(self, name, visible=True, locked=False):
         self.name = name
@@ -39,7 +39,7 @@ class SimpleImageEditor:
         # Undo stack
         self.undo_stack = []
 
-        # Top-level frames: toolbar on the left, main area in the center, layers on the right
+        # Frames: toolbar on the left, main area in the center, layers on the right
         self.toolbar_frame = tk.Frame(root, width=60, bg="#E0E0E0")
         self.toolbar_frame.pack(side=tk.LEFT, fill=tk.Y)
 
@@ -49,7 +49,7 @@ class SimpleImageEditor:
         self.layers_frame = tk.Frame(root, width=200, bg="#F0F0F0")
         self.layers_frame.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Toolbar
+        # Toolbar (tools)
         self.current_tool = None
         self.tool_buttons = {}
         self.setup_toolbar()
@@ -65,7 +65,6 @@ class SimpleImageEditor:
         self.last_y = None
         self.temp_item = None
         self.selected_item = None
-        self.selected_layer = None  # The layer the selected item belongs to
 
         # Drawing settings
         self.brush_size = DEFAULT_BRUSH_SIZE
@@ -73,23 +72,22 @@ class SimpleImageEditor:
         self.fill_color = DEFAULT_FILL_COLOR
         self.font_size = DEFAULT_FONT_SIZE
 
-        # Layers management
+        # Layer management
         self.layers = []
         self.current_layer_index = None
         self.setup_layers_panel()
 
-        # Tool option panel (color pickers, brush size slider, etc.)
+        # Tool options panel (color pickers, brush size, etc.)
         self.setup_tool_options_panel()
 
-        # Canvas bindings for drawing or transformations
+        # Canvas event bindings for drawing or transformations
         self.canvas.bind("<Button-1>", self.on_left_button_down)
         self.canvas.bind("<B1-Motion>", self.on_left_button_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_left_button_up)
 
         # Keyboard shortcuts
-        self.root.bind("<Control-z>", self.undo)  # Undo
-        self.root.bind("<Control-Z>", self.undo)  # Shift+Ctrl+Z, same as Ctrl+z
-        # Additional shortcuts can be bound for tool switching, etc.
+        self.root.bind("<Control-z>", self.undo)  
+        self.root.bind("<Control-Z>", self.undo)  # same as Ctrl+z
 
         # Start by creating an initial layer
         self.add_layer()
@@ -100,7 +98,7 @@ class SimpleImageEditor:
     def setup_toolbar(self):
         """
         Create the toolbar buttons for different tools.
-        In a real scenario, you might load icons for each button.
+        You could replace text with icons in a real-world scenario.
         """
         tools = [
             ("Select", None),
@@ -113,7 +111,8 @@ class SimpleImageEditor:
         ]
 
         for (tool_name, icon_path) in tools:
-            btn = tk.Button(self.toolbar_frame, text=tool_name, command=lambda t=tool_name: self.select_tool(t))
+            btn = tk.Button(self.toolbar_frame, text=tool_name, 
+                            command=lambda t=tool_name: self.select_tool(t))
             btn.pack(pady=5, fill=tk.X)
             self.tool_buttons[tool_name] = btn
         
@@ -138,7 +137,8 @@ class SimpleImageEditor:
     # Layers Panel
     # -----------------------------
     def setup_layers_panel(self):
-        tk.Label(self.layers_frame, text="Layers", bg="#F0F0F0", font=("Arial", 12, "bold")).pack(pady=5)
+        tk.Label(self.layers_frame, text="Layers", bg="#F0F0F0",
+                 font=("Arial", 12, "bold")).pack(pady=5)
         
         # Frame to hold the listbox and controls
         list_frame = tk.Frame(self.layers_frame, bg="#F0F0F0")
@@ -158,25 +158,25 @@ class SimpleImageEditor:
         ctrl_frame.pack(fill=tk.X)
         tk.Button(ctrl_frame, text="Up", command=self.move_layer_up).pack(side=tk.LEFT, padx=2)
         tk.Button(ctrl_frame, text="Down", command=self.move_layer_down).pack(side=tk.LEFT, padx=2)
+        tk.Button(ctrl_frame, text="Hide/Show", command=self.toggle_layer_visibility).pack(side=tk.LEFT, padx=2)
         tk.Button(ctrl_frame, text="Delete", command=self.delete_layer).pack(side=tk.LEFT, padx=2)
 
     def add_layer(self, layer_name=None):
         """
-        Add a new layer (empty by default).
+        Add a new empty layer and place it at the top of the stack (index 0).
         """
         if layer_name is None:
             layer_name = f"Layer {len(self.layers)+1}"
         new_layer = Layer(layer_name)
-        self.layers.insert(0, new_layer)  # top of the stack
+        self.layers.insert(0, new_layer)
         self.layer_listbox.insert(0, layer_name)
         self.layer_listbox.selection_clear(0, tk.END)
-        self.layer_listbox.selection_set(0)  # select new layer
+        self.layer_listbox.selection_set(0)
         self.on_layer_select(None)
 
     def on_layer_select(self, event):
         """
-        Handler for when the user selects a layer from the listbox.
-        Sets the current layer to the selected one.
+        Sets the current_layer_index to the selected layer.
         """
         selection = self.layer_listbox.curselection()
         if not selection:
@@ -186,7 +186,7 @@ class SimpleImageEditor:
 
     def move_layer_up(self):
         """
-        Move the selected layer up (increase stacking).
+        Move the selected layer up (towards index 0 in our list).
         """
         sel = self.layer_listbox.curselection()
         if not sel:
@@ -205,16 +205,14 @@ class SimpleImageEditor:
         # Reselect
         self.layer_listbox.selection_set(idx-1)
         self.current_layer_index = idx-1
-        # Also update canvas stacking
+        # Also bring items in canvas to front
         layer_moved = self.layers[idx-1]
-        layer_above = self.layers[idx]
-        for (iid, t) in layer_moved.items:
-            # raise each item above items in layer_above
+        for (iid, shape_type) in layer_moved.items:
             self.canvas.tag_raise(iid)
 
     def move_layer_down(self):
         """
-        Move the selected layer down (decrease stacking).
+        Move the selected layer down (towards the end of the list).
         """
         sel = self.layer_listbox.curselection()
         if not sel:
@@ -233,12 +231,36 @@ class SimpleImageEditor:
         # Reselect
         self.layer_listbox.selection_set(idx+1)
         self.current_layer_index = idx+1
-        # Also update canvas stacking
+        # Also lower items in canvas
         layer_moved = self.layers[idx+1]
-        layer_below = self.layers[idx]
-        for (iid, t) in layer_moved.items:
-            # lower each item below items in layer_below
+        for (iid, shape_type) in layer_moved.items:
             self.canvas.tag_lower(iid)
+
+    def toggle_layer_visibility(self):
+        """
+        Hide or show the selected layer by toggling its 'visible' flag
+        and configuring each item’s canvas state to NORMAL or HIDDEN.
+        """
+        sel = self.layer_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        layer = self.layers[idx]
+        # Toggle visibility
+        layer.visible = not layer.visible
+        new_state = tk.NORMAL if layer.visible else tk.HIDDEN
+
+        # Update the items on canvas
+        for (iid, shape_type) in layer.items:
+            self.canvas.itemconfigure(iid, state=new_state)
+
+        # Optionally, update the layer name in the Listbox to indicate hidden
+        self.layer_listbox.delete(idx)
+        if layer.visible:
+            self.layer_listbox.insert(idx, layer.name)
+        else:
+            self.layer_listbox.insert(idx, layer.name + " (hidden)")
+        self.layer_listbox.selection_set(idx)
 
     def delete_layer(self):
         """
@@ -318,7 +340,7 @@ class SimpleImageEditor:
         Mouse down: either select item or start drawing shape/line/brush.
         """
         if self.current_layer_index is None:
-            # If no layer selected, auto-select top layer
+            # If no layer selected, auto-select top layer if it exists
             if self.layers:
                 self.current_layer_index = 0
                 self.layer_listbox.selection_set(0)
@@ -326,7 +348,8 @@ class SimpleImageEditor:
                 return  # no layers to draw on
 
         current_layer = self.layers[self.current_layer_index]
-        # If layer is locked or not visible, do nothing
+
+        # If the layer is locked or not visible, do nothing
         if current_layer.locked or not current_layer.visible:
             return
 
@@ -338,8 +361,8 @@ class SimpleImageEditor:
             item = self.canvas.find_closest(event.x, event.y)
             if item:
                 iid = item[0]
-                # Check if this item is in the current layer
                 belongs_to = self.find_layer_of_item(iid)
+                # Only select if belongs to an unlocked layer
                 if belongs_to is not None and not belongs_to.locked:
                     self.select_item(iid)
                 else:
@@ -361,10 +384,10 @@ class SimpleImageEditor:
             if item:
                 iid = item[0]
                 self.erase_item(iid)
-            # For drag erasing, you might continuously erase in on_left_button_drag
 
         elif self.current_tool == "Text":
-            text_id = self.canvas.create_text(event.x, event.y, text="Sample",
+            text_id = self.canvas.create_text(event.x, event.y,
+                                              text="Sample",
                                               fill=self.stroke_color,
                                               font=("Arial", self.font_size))
             current_layer.add_item(text_id, "Text")
@@ -372,7 +395,8 @@ class SimpleImageEditor:
             self.select_item(text_id)
 
         elif self.current_tool in ("Line", "Rectangle", "Ellipse"):
-            self.temp_item = None  # We'll build this in the drag event
+            # We'll build the shape in the drag event
+            self.temp_item = None
 
     def on_left_button_drag(self, event):
         if self.current_layer_index is None:
@@ -402,6 +426,7 @@ class SimpleImageEditor:
                 self.canvas.delete(self.temp_item)
             self.temp_item = self.canvas.create_line(self.start_x, self.start_y, event.x, event.y,
                                                      fill=self.stroke_color, width=self.brush_size)
+
         elif self.current_tool == "Rectangle":
             if self.temp_item:
                 self.canvas.delete(self.temp_item)
@@ -409,6 +434,7 @@ class SimpleImageEditor:
                                                           outline=self.stroke_color,
                                                           fill=self.fill_color,
                                                           width=self.brush_size)
+
         elif self.current_tool == "Ellipse":
             if self.temp_item:
                 self.canvas.delete(self.temp_item)
@@ -419,7 +445,7 @@ class SimpleImageEditor:
 
     def on_left_button_up(self, event):
         if self.current_tool in ("Line", "Rectangle", "Ellipse") and self.temp_item:
-            # finalize
+            # Finalize shape
             current_layer = self.layers[self.current_layer_index]
             shape_type = self.current_tool
             current_layer.add_item(self.temp_item, shape_type)
@@ -436,18 +462,20 @@ class SimpleImageEditor:
                 pass
         self.selected_item = item_id
         if item_id:
+            # Highlight new selection by thickening the outline (simple approach)
             try:
-                # highlight new
                 self.canvas.itemconfig(item_id, width=max(self.brush_size+2, 3))
             except:
                 pass
 
     def erase_item(self, item_id):
+        # Erase item if it's in an unlocked layer
         layer_of_item = self.find_layer_of_item(item_id)
         if layer_of_item and not layer_of_item.locked:
             layer_of_item.remove_item(item_id)
-            self.push_undo(("delete", item_id, self.canvas.type(item_id),
-                            self.canvas.coords(item_id), 
+            self.push_undo(("delete", item_id,
+                            self.canvas.type(item_id),
+                            self.canvas.coords(item_id),
                             self.canvas.itemconfig(item_id)))
             self.canvas.delete(item_id)
             if self.selected_item == item_id:
@@ -468,7 +496,7 @@ class SimpleImageEditor:
     # -----------------------------
     def push_undo(self, action):
         """
-        Action could be: 
+        Action format:
           ("create", item_id)
           ("delete", item_id, item_type, coords, config)
         """
@@ -483,9 +511,8 @@ class SimpleImageEditor:
         atype = action[0]
 
         if atype == "create":
-            # Means we created an item
+            # Remove the created item
             item_id = action[1]
-            # Remove it from canvas and from layer
             layer = self.find_layer_of_item(item_id)
             if layer:
                 layer.remove_item(item_id)
@@ -494,9 +521,9 @@ class SimpleImageEditor:
                 self.selected_item = None
 
         elif atype == "delete":
-            # Means we deleted an item, so restore it
+            # Restore a deleted item
             item_id, item_type, coords, config = action[1], action[2], action[3], action[4]
-            # Recreate
+            # Recreate item
             if item_type == "line":
                 restored_id = self.canvas.create_line(*coords)
             elif item_type == "rectangle":
@@ -504,34 +531,35 @@ class SimpleImageEditor:
             elif item_type == "oval":
                 restored_id = self.canvas.create_oval(*coords)
             elif item_type == "text":
-                # We need text specifics from config
-                text_val = config["text"][-1] if "text" in config else "RestoredText"
+                # Attempt to extract the 'text' option from config
+                text_val = config.get("text", ("", "Restored"))[-1]
                 restored_id = self.canvas.create_text(coords[0], coords[1], text=text_val)
             elif item_type == "polygon":
                 restored_id = self.canvas.create_polygon(*coords)
             else:
-                # fallback
+                # fallback: treat as line
                 restored_id = self.canvas.create_line(*coords)
 
-            # Apply config
+            # Apply item config
             for ckey, cval in config.items():
-                # cval is a tuple like ('fill', '#xxxxxx'), so cval[-1] is the actual color
-                # or it might be another structure. Let's assume last is the value
+                # cval is typically a tuple (option, value)
                 try:
                     self.canvas.itemconfig(restored_id, {ckey: cval[-1]})
                 except:
                     pass
 
-            # Insert back into the top layer (or create a new default layer?)
+            # Put it back into the top layer (or create a new default layer)
             if not self.layers:
                 self.add_layer()
             self.layers[0].add_item(restored_id, item_type)
 
     # -----------------------------
-    # Layered Image: open and save
+    # Open/Save Images
     # -----------------------------
     def open_image_layer(self):
-        """Open an image file and create a new layer containing it."""
+        """
+        Open an image file and create a new layer containing it.
+        """
         file_path = filedialog.askopenfilename(
             title="Open Image",
             filetypes=(("Image Files", "*.png;*.jpg;*.jpeg;*.gif;*.bmp"), ("All Files", "*.*"))
@@ -540,10 +568,10 @@ class SimpleImageEditor:
             return
         
         img = Image.open(file_path)
-        # Convert to PhotoImage for canvas
+        # Convert to PhotoImage for the canvas
         tk_img = ImageTk.PhotoImage(img)
         image_id = self.canvas.create_image(0, 0, anchor=tk.NW, image=tk_img)
-        # We must store a reference to keep it displayed
+        # Keep a reference to avoid garbage collection
         self.canvas.image = tk_img
 
         # Add to a new layer
@@ -553,7 +581,9 @@ class SimpleImageEditor:
         self.select_tool("Select")
 
     def save_canvas_snapshot(self):
-        """Save the current canvas as an image (flattened)."""
+        """
+        Save the current canvas as an image (flattened).
+        """
         file_path = filedialog.asksaveasfilename(
             title="Save Image",
             defaultextension=".png",
@@ -569,17 +599,15 @@ class SimpleImageEditor:
         x1 = x0 + self.canvas.winfo_width()
         y1 = y0 + self.canvas.winfo_height()
         
-        # Use Pillow to grab the screen region of the canvas
+        # Use pyscreenshot or Pillow ImageGrab to capture the region
         try:
             import pyscreenshot as ImageGrab
             img = ImageGrab.grab(bbox=(x0, y0, x1, y1))
             img.save(file_path)
         except ImportError:
-            # If pyscreenshot or PIL's ImageGrab is not available on some platforms,
-            # you'd have to rely on other methods
             print("pyscreenshot not installed. Cannot save canvas snapshot.")
 
-# Example usage:
+# Example usage
 if __name__ == "__main__":
     root = tk.Tk()
     app = SimpleImageEditor(root)
