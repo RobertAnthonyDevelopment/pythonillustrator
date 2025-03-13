@@ -1,3 +1,21 @@
+"""
+================================================================================
+EXTREMELY VERBOSE, FEATURE-PACKED IMAGE EDITOR DEMONSTRATION
+WITH A SINGLE "BEND TOOL" THAT ACTS LIKE A SELECTION TOOL FOR BENDS.
+--------------------------------------------------------------------------------
+Retains:
+  - Layers, shape data, multiple erasers, direct select, brush, shapes, etc.
+  - Full undo/redo with a snapshot-based history panel
+  - Large docstrings and comments
+--------------------------------------------------------------------------------
+BEND TOOL:
+  - Click a shape => anchors appear
+  - Drag anchor => move it
+  - Shift+Click anchor => remove it (if line-based, if > 2 anchors remain)
+  - Alt+Click on segment => insert new anchor
+  - Ctrl+Click near anchors => warp them in a radius
+"""
+
 import tkinter as tk
 from tkinter import ttk, filedialog, colorchooser
 import copy
@@ -5,41 +23,28 @@ import math
 from PIL import Image, ImageTk
 
 # ------------------------------------------------------------------------------
-# CONSTANTS & CONFIG
+# CONSTANTS
 # ------------------------------------------------------------------------------
 DEFAULT_BRUSH_SIZE = 3
 DEFAULT_STROKE_COLOR = "#000000"
 DEFAULT_FILL_COLOR = "#FFFFFF"
 DEFAULT_FONT_SIZE = 14
 
-MAX_HISTORY = 30  # Number of stored snapshots
-ERASER_RADIUS = 15.0  # Radius for partial anchor erasing
-SOFT_ERASER_FADE_STEP = 20  # "Fade" step for the "Soft Eraser" demonstration
+MAX_HISTORY = 30
+ERASER_RADIUS = 15.0
+SOFT_ERASER_FADE_STEP = 20
+BEND_WARP_RADIUS = 50.0
 
-# For advanced shape warping, we might define certain constants
-BEND_WARP_RADIUS = 50.0  # for "Bend Tool B" demonstration
+# Key modifiers for different Bend actions:
+SHIFT_MASK = 0x0001      # On some platforms, SHIFT is bit 0
+ALT_MASK = 0x0008        # On many platforms, Alt is bit 3
+CONTROL_MASK = 0x0004    # On many platforms, Ctrl is bit 2
 
 
 # ------------------------------------------------------------------------------
-# LAYER CLASS
+# LAYER
 # ------------------------------------------------------------------------------
 class Layer:
-    """
-    Represents a single layer in the editor.
-    Each layer is a container for canvas items.
-
-    Attributes:
-    -----------
-    name : str
-        The name of this layer (e.g., "Layer 1" or "ImageLayer_foo.png").
-    visible : bool
-        If True, items in this layer are shown. If False, they're hidden (state=HIDDEN).
-    locked : bool
-        If True, user actions can't modify shapes in this layer.
-    items : list of (item_id, shape_type)
-        The actual references to shapes on the canvas. item_id is the Tkinter Canvas ID.
-    """
-
     def __init__(self, name, visible=True, locked=False):
         self.name = name
         self.visible = visible
@@ -47,51 +52,20 @@ class Layer:
         self.items = []
 
     def add_item(self, item_id, shape_type):
-        """
-        Add a shape to this layer's item list.
-
-        Parameters
-        ----------
-        item_id : int
-            The canvas item ID for the shape
-        shape_type : str
-            The shape classification, e.g. "line", "rectangle", "ellipse", ...
-        """
         self.items.append((item_id, shape_type))
 
     def remove_item(self, item_id):
-        """
-        Remove a shape from this layer by its item_id.
-        """
         self.items = [(iid, st) for (iid, st) in self.items if iid != item_id]
 
+
 # ------------------------------------------------------------------------------
-# SHAPE DATA CLASS
+# SHAPE DATA
 # ------------------------------------------------------------------------------
 class ShapeData:
-    """
-    A structure for storing anchor information about shapes so we can:
-      - Move anchor points (Direct Select)
-      - Insert anchors, remove anchors (Bend Tools)
-      - Erase partially
-      - Redo/Undo states
-
-    shape_data[item_id] = {
-        'type': 'line'|'rectangle'|'ellipse'|'brush'|'text'|'image'|'warp'|...,
-        'coords': [x1,y1, x2,y2, ...],   # anchor points
-        'fill': str or None,
-        'outline': str or None,
-        'width': int or float
-    }
-    """
-
     def __init__(self):
         self.shapes = {}
 
     def store(self, item_id, shape_type, coords, fill, outline, width):
-        """
-        Store shape info in a dictionary. We copy coords so we can mutate them.
-        """
         self.shapes[item_id] = {
             'type': shape_type,
             'coords': coords[:],
@@ -101,163 +75,93 @@ class ShapeData:
         }
 
     def remove(self, item_id):
-        """
-        Remove shape info from the dictionary.
-        """
         if item_id in self.shapes:
             del self.shapes[item_id]
 
     def get(self, item_id):
-        """
-        Retrieve the shape info dictionary for the given item ID, or None if not found.
-        """
         return self.shapes.get(item_id)
 
     def update_coords(self, item_id, new_coords):
-        """
-        Update only the coords array for an existing shape record.
-        """
         if item_id in self.shapes:
             self.shapes[item_id]['coords'] = new_coords[:]
 
 
 # ------------------------------------------------------------------------------
-# HISTORY CLASS (SNAPSHOT-BASED TIME TRAVEL)
+# EDITOR HISTORY
 # ------------------------------------------------------------------------------
 class EditorHistory:
-    """
-    Manages a list of snapshot states (shape_data + layer info).
-    Allows for arbitrary time-travel, plus linear undo/redo.
-
-    Each snapshot is stored as a tuple:
-      (shape_data_dict_copy, [layers_copy], description_string)
-
-    shape_data_dict_copy is a deep copy of shape_data.shapes
-    layers_copy is a list of deep-copied Layer objects
-    """
-
     def __init__(self):
         self.states = []
         self.current_index = -1
 
     def push_state(self, shape_data, layers, description):
-        """
-        Capture the current entire editor state in a snapshot. Then store it at
-        position current_index+1. If we had undone states, remove states after
-        the new insertion point.
-        """
         if self.current_index < len(self.states) - 1:
-            # we've undone some states, so remove future states
-            self.states = self.states[:self.current_index + 1]
-
-        # If we exceed the limit, drop from the front
+            self.states = self.states[:self.current_index+1]
         if len(self.states) >= MAX_HISTORY:
             del self.states[0]
             self.current_index -= 1
-
-        # Make deep copies of shape_data and layers
         shape_data_copy = copy.deepcopy(shape_data.shapes)
-
         layers_copy = []
         for lyr in layers:
             new_lyr = Layer(lyr.name, lyr.visible, lyr.locked)
             new_lyr.items = copy.deepcopy(lyr.items)
             layers_copy.append(new_lyr)
 
-        # Append new snapshot
         self.states.append((shape_data_copy, layers_copy, description))
         self.current_index = len(self.states) - 1
 
     def can_undo(self):
-        """
-        Return True if we can step backward in history.
-        """
         return self.current_index > 0
 
     def can_redo(self):
-        """
-        Return True if we can step forward in history.
-        """
         return self.current_index < len(self.states) - 1
 
     def undo(self):
-        """
-        Move current_index one step backward if possible.
-        Return the new state we land on, or None if we can't undo.
-        """
         if self.can_undo():
             self.current_index -= 1
             return self.states[self.current_index]
         return None
 
     def redo(self):
-        """
-        Move current_index one step forward if possible.
-        Return the new state, or None if we can't redo.
-        """
         if self.can_redo():
             self.current_index += 1
             return self.states[self.current_index]
         return None
 
     def go_to(self, index):
-        """
-        Jump to an arbitrary index in the states list.
-        Return that state if valid, else None.
-        """
         if 0 <= index < len(self.states):
             self.current_index = index
             return self.states[self.current_index]
         return None
 
     def get_current_state(self):
-        """
-        Return the current state (shape_data, layers, description) or None.
-        """
         if 0 <= self.current_index < len(self.states):
             return self.states[self.current_index]
         return None
 
     def get_all_descriptions(self):
-        """
-        Return a list of strings describing each snapshot, e.g. "0: created line"
-        """
         return [f"{i}: {desc[2]}" for i, desc in enumerate(self.states)]
 
+
 # ------------------------------------------------------------------------------
-# MAIN EDITOR CLASS
+# MAIN EDITOR
 # ------------------------------------------------------------------------------
 class SimpleImageEditor:
-    """
-    A very large, verbose editor class that unifies:
-      - Layers
-      - ShapeData
-      - History
-      - Multiple Tools (Select, Direct Select, multiple Bend Tools, multiple Erasers, etc.)
-      - Large docstrings for demonstration
-    """
-
     def __init__(self, root):
-        """
-        Initialize the editor. Sets up UI frames, canvas, toolbars, layers, etc.
-        """
         self.root = root
-        root.title("Super Verbose Editor w/ Multiple Bend Tools & Erasers + Full Undo/Redo + History")
+        root.title("Huge Editor with Single Bend Tool Working Like a Bending Selection")
         root.geometry("1300x800")
 
-        # Data structures
         self.shape_data = ShapeData()
         self.layers = []
         self.current_layer_index = None
         self.selected_item = None
 
-        # Editor state
         self.brush_size = DEFAULT_BRUSH_SIZE
         self.stroke_color = DEFAULT_STROKE_COLOR
         self.fill_color = DEFAULT_FILL_COLOR
         self.font_size = DEFAULT_FONT_SIZE
 
-        # Tools
         self.current_tool = None
         self.tool_buttons = {}
 
@@ -268,34 +172,26 @@ class SimpleImageEditor:
         self.last_x = None
         self.last_y = None
 
-        # For "Select" (move entire shape)
+        # For "Select" move
         self.moving_shape = False
         self.drag_offset_x = 0
         self.drag_offset_y = 0
 
-        # For "Direct Select"
+        # For Direct Select
         self.direct_select_anchors = []
         self.direct_select_dragging_anchor = None
         self.direct_select_drag_index = None
 
-        # For multiple Bend Tools
-        self.bend_anchors = []  # anchor squares
+        # For Bend Tool
+        self.bend_anchors = []
         self.bend_drag_anchor = None
         self.bend_drag_index = None
 
-        # Additional Bend Tools (B, C, etc.) – we’ll store state for them
-        self.bendB_active = False
-        self.bendC_active = False
-        # etc.
-
-        # Eraser settings
         self.eraser_radius = ERASER_RADIUS
         self.soft_eraser_fade_step = SOFT_ERASER_FADE_STEP
 
-        # History manager
         self.history = EditorHistory()
 
-        # Build UI
         self.build_frames()
         self.setup_toolbar()
         self.setup_canvas()
@@ -303,25 +199,16 @@ class SimpleImageEditor:
         self.setup_layers_panel()
         self.setup_history_panel()
 
-        # Start with one layer
         self.add_layer("Layer 1")
-
-        # Push initial state to history
         self.push_history("Initial State")
 
-        # Keyboard shortcuts for Undo/Redo
         self.root.bind("<Control-z>", self.on_ctrl_z)
         self.root.bind("<Control-y>", self.on_ctrl_y)
 
-
     # -------------------------------------------------------------------------
-    # GIANT FRAME / UI BUILD
+    # LARGE UI BUILD
     # -------------------------------------------------------------------------
     def build_frames(self):
-        """
-        Build the major frames of the UI: left toolbar, center main,
-        right side panel for layers & history.
-        """
         self.toolbar_frame = tk.Frame(self.root, width=120, bg="#E0E0E0")
         self.toolbar_frame.pack(side=tk.LEFT, fill=tk.Y)
 
@@ -331,34 +218,11 @@ class SimpleImageEditor:
         self.side_frame = tk.Frame(self.root, width=300, bg="#F0F0F0")
         self.side_frame.pack(side=tk.RIGHT, fill=tk.Y)
 
-
-    # -------------------------------------------------------------------------
-    # TOOLBAR
-    # -------------------------------------------------------------------------
     def setup_toolbar(self):
-        """
-        Create a huge variety of tools:
-         - Select
-         - Direct Select
-         - Bend Tool A (basic anchor add/remove)
-         - Bend Tool B (warp shape in area)
-         - Bend Tool C (insert arcs or advanced anchor editing)
-         - Brush
-         - Line
-         - Rectangle
-         - Ellipse
-         - Text
-         - Sharp Eraser
-         - Round Eraser
-         - Soft Eraser
-        """
-        # We'll show many tools to expand line count.
         tools = [
             ("Select", None),
             ("Direct Select", None),
-            ("Bend Tool A", None),
-            ("Bend Tool B", None),
-            ("Bend Tool C", None),
+            ("Bend Tool", None),     # Single unified Bend Tool
             ("Brush", None),
             ("Line", None),
             ("Rectangle", None),
@@ -366,7 +230,7 @@ class SimpleImageEditor:
             ("Text", None),
             ("Sharp Eraser", None),
             ("Round Eraser", None),
-            ("Soft Eraser", None)
+            ("Soft Eraser", None),
         ]
         for (tool_name, _) in tools:
             b = tk.Button(self.toolbar_frame, text=tool_name,
@@ -374,52 +238,34 @@ class SimpleImageEditor:
             b.pack(pady=5, fill=tk.X)
             self.tool_buttons[tool_name] = b
 
-        # Additional Buttons
+        # Some extra
         ttk.Button(self.toolbar_frame, text="Add Layer", command=self.add_layer).pack(pady=5, fill=tk.X)
         ttk.Button(self.toolbar_frame, text="Open Image", command=self.open_image_layer).pack(pady=5, fill=tk.X)
         ttk.Button(self.toolbar_frame, text="Save Canvas", command=self.save_canvas_snapshot).pack(pady=5, fill=tk.X)
 
-
     def select_tool(self, tool_name):
-        """
-        Switch to the chosen tool. Clear any anchor handles from old tools.
-        """
         self.current_tool = tool_name
         self.moving_shape = False
         self.direct_select_dragging_anchor = None
         self.bend_drag_anchor = None
 
-        # Clear anchor squares
         self.clear_direct_select_anchors()
         self.clear_bend_anchors()
-        # Reset advanced bend states
-        self.bendB_active = (tool_name == "Bend Tool B")
-        self.bendC_active = (tool_name == "Bend Tool C")
 
-        # Update button highlights
         for n, btn in self.tool_buttons.items():
             if n == tool_name:
                 btn.config(relief=tk.SUNKEN, bg="#a0cfe6")
             else:
                 btn.config(relief=tk.RAISED, bg="SystemButtonFace")
 
-
-    # -------------------------------------------------------------------------
-    # CANVAS
-    # -------------------------------------------------------------------------
     def setup_canvas(self):
         self.canvas = tk.Canvas(self.main_frame, bg="white", cursor="cross")
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        # Bind events
         self.canvas.bind("<Button-1>", self.on_left_down)
         self.canvas.bind("<B1-Motion>", self.on_left_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_left_up)
 
-
-    # -------------------------------------------------------------------------
-    # TOOL OPTIONS
-    # -------------------------------------------------------------------------
     def setup_tool_options(self):
         f = tk.Frame(self.main_frame, bg="#DDDDDD", height=50)
         f.pack(side=tk.BOTTOM, fill=tk.X)
@@ -446,10 +292,6 @@ class SimpleImageEditor:
         self.font_size_spin.set(str(self.font_size))
         self.font_size_spin.pack(side=tk.LEFT, padx=5)
 
-
-    # -------------------------------------------------------------------------
-    # LAYERS
-    # -------------------------------------------------------------------------
     def setup_layers_panel(self):
         lbl = tk.Label(self.side_frame, text="Layers", bg="#F0F0F0",
                        font=("Arial", 12, "bold"))
@@ -472,7 +314,6 @@ class SimpleImageEditor:
         tk.Button(ctrl, text="Down", command=self.move_layer_down).pack(side=tk.LEFT, padx=2)
         tk.Button(ctrl, text="Hide/Show", command=self.toggle_layer_visibility).pack(side=tk.LEFT, padx=2)
         tk.Button(ctrl, text="Delete", command=self.delete_layer).pack(side=tk.LEFT, padx=2)
-
 
     def add_layer(self, name=None):
         if name is None:
@@ -505,7 +346,6 @@ class SimpleImageEditor:
         self.layer_listbox.insert(idx, up_name)
         self.layer_listbox.selection_set(idx-1)
         self.current_layer_index = idx-1
-        # raise items
         for (iid, st) in self.layers[idx-1].items:
             self.canvas.tag_raise(iid)
         self.push_history(f"Layer {cur_name} moved up")
@@ -563,9 +403,6 @@ class SimpleImageEditor:
         self.selected_item = None
         self.push_history(f"Deleted layer {nm}")
 
-    # -------------------------------------------------------------------------
-    # HISTORY
-    # -------------------------------------------------------------------------
     def setup_history_panel(self):
         lbl = tk.Label(self.side_frame, text="History", bg="#F0F0F0", font=("Arial", 12, "bold"))
         lbl.pack(pady=5)
@@ -620,25 +457,14 @@ class SimpleImageEditor:
         self.do_redo()
 
     def apply_history_state(self, state):
-        """
-        Rebuild the entire editor from the given snapshot:
-         (shape_data_dict, layers_copy, description)
-        We'll have to re-create canvas items from scratch because we called
-        canvas.delete('all').
-        """
         shape_data_copy, layers_copy, desc = state
-        # wipe
         self.canvas.delete("all")
         self.shape_data.shapes.clear()
         self.layers.clear()
         self.layer_listbox.delete(0, tk.END)
         self.selected_item = None
 
-        # We'll map old_id -> new_id
         old_to_new = {}
-
-        # Rebuild shape_data
-        # But we can't just store them, we also must create new canvas items
         for old_id, sdata in shape_data_copy.items():
             stype = sdata['type']
             coords = sdata['coords']
@@ -656,26 +482,19 @@ class SimpleImageEditor:
             elif stype == "brush":
                 new_id = self.canvas.create_line(*coords, fill=outline, width=width)
             elif stype == "text":
-                # We'll assume the text is "Sample" for now
-                # Or store actual text in shape_data if we want
                 new_id = self.canvas.create_text(coords[0], coords[1], text="Sample", fill=outline)
             elif stype == "image":
-                # We don't store the actual image data in this snapshot approach
-                # so let's place a placeholder
                 new_id = self.canvas.create_text(coords[0], coords[1],
-                                                 text="(Missing image in snapshot)",
+                                                 text="(Missing image data in history)",
                                                  fill="red")
             else:
-                # fallback
                 new_id = self.canvas.create_line(*coords, fill=outline, width=width)
 
             old_to_new[old_id] = new_id
             self.shape_data.shapes[new_id] = copy.deepcopy(sdata)
 
-        # Rebuild layers
         for lcopy in layers_copy:
             new_lyr = Layer(lcopy.name, lcopy.visible, lcopy.locked)
-            # Convert item IDs
             new_items = []
             for (iid, st) in lcopy.items:
                 new_iid = old_to_new.get(iid)
@@ -683,20 +502,18 @@ class SimpleImageEditor:
                     new_items.append((new_iid, st))
             new_lyr.items = new_items
             self.layers.append(new_lyr)
-            name = lcopy.name
+            label = lcopy.name
             if not lcopy.visible:
-                name += " (hidden)"
-            self.layer_listbox.insert(tk.END, name)
+                label += " (hidden)"
+            self.layer_listbox.insert(tk.END, label)
 
-        # Hide items in invisible layers
         for lyr in self.layers:
             if not lyr.visible:
                 for (iid, st) in lyr.items:
                     self.canvas.itemconfigure(iid, state=tk.HIDDEN)
 
-
     # -------------------------------------------------------------------------
-    # EVENTS: MOUSE
+    # MOUSE EVENTS
     # -------------------------------------------------------------------------
     def on_left_down(self, event):
         if self.current_layer_index is None:
@@ -704,9 +521,8 @@ class SimpleImageEditor:
                 self.current_layer_index = 0
             else:
                 return
-
-        lyr = self.layers[self.current_layer_index]
-        if lyr.locked or not lyr.visible:
+        layer = self.layers[self.current_layer_index]
+        if layer.locked or not layer.visible:
             return
 
         self.start_x, self.start_y = event.x, event.y
@@ -718,33 +534,25 @@ class SimpleImageEditor:
         elif self.current_tool == "Direct Select":
             self.handle_direct_select_click(event.x, event.y)
 
-        elif self.current_tool == "Bend Tool A":
-            self.handle_bend_tool_a_click(event.x, event.y)
-
-        elif self.current_tool == "Bend Tool B":
-            self.handle_bend_tool_b_click(event.x, event.y)
-
-        elif self.current_tool == "Bend Tool C":
-            self.handle_bend_tool_c_click(event.x, event.y)
+        elif self.current_tool == "Bend Tool":
+            self.handle_bend_tool_click(event)
 
         elif self.current_tool == "Brush":
-            self.create_brush_segment(event.x, event.y, lyr)
+            self.create_brush_segment(event.x, event.y, layer)
 
         elif self.current_tool in ("Line","Rectangle","Ellipse"):
             self.temp_item = None
 
         elif self.current_tool == "Text":
-            tid = self.canvas.create_text(event.x, event.y, text="Sample",
-                                          fill=self.stroke_color,
-                                          font=("Arial", self.font_size))
-            lyr.add_item(tid, "text")
-            self.shape_data.store(tid, "text", [event.x, event.y],
+            txt = self.canvas.create_text(event.x, event.y, text="Sample",
+                                          fill=self.stroke_color, font=("Arial", self.font_size))
+            layer.add_item(txt, "text")
+            self.shape_data.store(txt, "text", [event.x, event.y],
                                   fill=self.stroke_color, outline=self.stroke_color, width=1)
-            self.select_item(tid)
+            self.select_item(txt)
             self.push_history("Created text")
 
         elif self.current_tool == "Sharp Eraser":
-            # entire shape
             item = self.canvas.find_closest(event.x, event.y)
             if item:
                 self.erase_item(item[0])
@@ -762,41 +570,29 @@ class SimpleImageEditor:
                 self.soft_erase_shape(item[0])
                 self.push_history("Soft Eraser used")
 
-
     def on_left_drag(self, event):
         if self.current_layer_index is None:
             return
-        lyr = self.layers[self.current_layer_index]
-        if lyr.locked or not lyr.visible:
+        layer = self.layers[self.current_layer_index]
+        if layer.locked or not layer.visible:
             return
 
-        # SELECT (move entire shape)
         if self.current_tool == "Select" and self.moving_shape and self.selected_item:
             self.move_entire_shape(event.x, event.y)
 
-        # DIRECT SELECT anchor dragging
         elif self.current_tool == "Direct Select" and self.direct_select_dragging_anchor is not None:
             self.direct_select_drag_anchor(event.x, event.y)
 
-        # BEND TOOL A anchor dragging
-        elif self.current_tool == "Bend Tool A" and self.bend_drag_anchor is not None:
-            self.bend_tool_a_drag_anchor(event.x, event.y)
-
-        # BEND TOOL B, C might also have dragging
-        elif self.current_tool == "Bend Tool B":
-            pass  # e.g. warp dragging
-        elif self.current_tool == "Bend Tool C":
-            pass  # e.g. advanced anchor insertion?
+        elif self.current_tool == "Bend Tool" and self.bend_drag_anchor is not None:
+            self.bend_tool_drag_anchor(event.x, event.y)
 
         elif self.current_tool == "Brush":
             dx = event.x - self.last_x
             dy = event.y - self.last_y
             if abs(dx) > 1 or abs(dy) > 1:
-                line_id = self.canvas.create_line(self.last_x, self.last_y,
-                                                  event.x, event.y,
-                                                  fill=self.stroke_color,
-                                                  width=self.brush_size)
-                lyr.add_item(line_id, "brush")
+                line_id = self.canvas.create_line(self.last_x, self.last_y, event.x, event.y,
+                                                  fill=self.stroke_color, width=self.brush_size)
+                layer.add_item(line_id, "brush")
                 self.shape_data.store(line_id, "brush",
                                       [self.last_x, self.last_y, event.x, event.y],
                                       fill=None, outline=self.stroke_color, width=self.brush_size)
@@ -829,7 +625,6 @@ class SimpleImageEditor:
                                                      fill=self.fill_color,
                                                      width=self.brush_size)
 
-
     def on_left_up(self, event):
         if self.current_tool == "Select" and self.moving_shape:
             self.moving_shape = False
@@ -842,10 +637,10 @@ class SimpleImageEditor:
             self.push_history("Anchor moved (Direct Select)")
             return
 
-        if self.current_tool == "Bend Tool A" and self.bend_drag_anchor is not None:
+        if self.current_tool == "Bend Tool" and self.bend_drag_anchor is not None:
             self.bend_drag_anchor = None
             self.bend_drag_index = None
-            self.push_history("Anchor moved (Bend Tool A)")
+            self.push_history("Anchor moved (Bend Tool)")
             return
 
         if self.temp_item and self.current_tool in ("Line","Rectangle","Ellipse"):
@@ -854,159 +649,81 @@ class SimpleImageEditor:
 
 
     # -------------------------------------------------------------------------
-    # SELECT (MOVE ENTIRE SHAPE)
+    # BEND TOOL (One Tool That Does Add/Remove/Move/Warp)
     # -------------------------------------------------------------------------
-    def handle_select_click(self, x, y):
-        item = self.canvas.find_closest(x, y)
-        if item:
-            iid = item[0]
-            lyr = self.find_layer_of_item(iid)
-            if lyr and not lyr.locked:
-                self.select_item(iid)
-                shape_info = self.shape_data.get(iid)
-                if shape_info:
-                    coords = self.canvas.coords(iid)
-                    self.drag_offset_x = x - coords[0]
-                    self.drag_offset_y = y - coords[1]
-                    self.moving_shape = True
-                else:
-                    self.moving_shape = False
+    def handle_bend_tool_click(self, event):
+        """
+        This single Bend Tool acts like a selection tool but for anchor bending:
+          - SHIFT+Click on an anchor => remove anchor (if possible)
+          - ALT+Click on a segment => add anchor
+          - CTRL+Click near anchors => warp them
+          - Otherwise, click an anchor => drag anchor
+          - Click shape => show anchors
+        """
+        mods = event.state
+        x, y = event.x, event.y
+
+        # Check if SHIFT, ALT, CTRL are pressed:
+        shift_pressed = (mods & SHIFT_MASK) != 0
+        alt_pressed   = (mods & ALT_MASK) != 0
+        ctrl_pressed  = (mods & CONTROL_MASK) != 0
+
+        # If we have anchors visible, see if we clicked one
+        handle = self.find_bend_anchor(x, y)
+        if handle is not None:
+            # SHIFT+Click => remove anchor (line-based, if >2 anchors)
+            if shift_pressed:
+                shape_id, anchor_idx = handle
+                self.remove_bend_anchor(shape_id, anchor_idx)
+                return
             else:
-                self.select_item(None)
-        else:
-            self.select_item(None)
-
-    def move_entire_shape(self, x, y):
-        dx = x - self.last_x
-        dy = y - self.last_y
-        self.canvas.move(self.selected_item, dx, dy)
-        shape_info = self.shape_data.get(self.selected_item)
-        if shape_info:
-            coords = shape_info['coords']
-            for i in range(0,len(coords),2):
-                coords[i] += dx
-                coords[i+1] += dy
-            self.canvas.coords(self.selected_item, *coords)
-            self.shape_data.update_coords(self.selected_item, coords)
-        self.last_x, self.last_y = x, y
-
-    # -------------------------------------------------------------------------
-    # DIRECT SELECT
-    # -------------------------------------------------------------------------
-    def handle_direct_select_click(self, x, y):
-        # If we have anchor handles, see if we clicked one
-        if self.direct_select_anchors:
-            anchor = self.find_direct_select_anchor(x,y)
-            if anchor is not None:
-                shape_id, idx = anchor
-                self.direct_select_dragging_anchor = shape_id
-                self.direct_select_drag_index = idx
+                # start dragging anchor
+                self.bend_drag_anchor = handle[0]
+                self.bend_drag_index = handle[1]
                 return
 
-        # Otherwise, maybe we clicked a shape
+        # else maybe we clicked the shape
         item = self.canvas.find_closest(x, y)
-        if item:
-            iid = item[0]
-            lyr = self.find_layer_of_item(iid)
-            if lyr and not lyr.locked:
-                self.select_item(iid)
-                self.show_direct_select_anchors(iid)
-            else:
-                self.select_item(None)
-                self.clear_direct_select_anchors()
-        else:
-            self.select_item(None)
-            self.clear_direct_select_anchors()
-
-    def direct_select_drag_anchor(self, x, y):
-        if not self.direct_select_dragging_anchor:
-            return
-        shape_info = self.shape_data.get(self.direct_select_dragging_anchor)
-        if not shape_info:
-            return
-        coords = shape_info['coords']
-        idx = self.direct_select_drag_index
-        coords[idx] = x
-        coords[idx+1] = y
-
-        # update canvas
-        stype = shape_info['type']
-        if stype in ("line","brush"):
-            self.canvas.coords(self.direct_select_dragging_anchor, *coords)
-        elif stype in ("rectangle","ellipse"):
-            x1,y1,x2,y2 = self.normalize_rect(coords)
-            self.canvas.coords(self.direct_select_dragging_anchor, x1,y1,x2,y2)
-        elif stype == "text":
-            self.canvas.coords(self.direct_select_dragging_anchor, coords[0], coords[1])
-        # store
-        self.shape_data.update_coords(self.direct_select_dragging_anchor, coords)
-        self.update_direct_select_anchors(self.direct_select_dragging_anchor)
-
-    def show_direct_select_anchors(self, item_id):
-        self.clear_direct_select_anchors()
-        shape_info = self.shape_data.get(item_id)
-        if not shape_info:
-            return
-        coords = shape_info['coords']
-        for i in range(0,len(coords),2):
-            x = coords[i]
-            y = coords[i+1]
-            h = self.canvas.create_rectangle(x-3,y-3,x+3,y+3, fill="blue", outline="blue")
-            self.direct_select_anchors.append((h, item_id, i))
-
-    def update_direct_select_anchors(self, item_id):
-        shape_info = self.shape_data.get(item_id)
-        if not shape_info:
-            return
-        coords = shape_info['coords']
-        for (handle_id, sid, idx) in self.direct_select_anchors:
-            if sid == item_id:
-                x = coords[idx]
-                y = coords[idx+1]
-                self.canvas.coords(handle_id, x-3, y-3, x+3, y+3)
-
-    def find_direct_select_anchor(self, x, y):
-        radius = 6
-        for (hid, shape_iid, idx) in self.direct_select_anchors:
-            hx1, hy1, hx2, hy2 = self.canvas.coords(hid)
-            if hx1 - radius < x < hx2 + radius and hy1 - radius < y < hy2 + radius:
-                return (shape_iid, idx)
-        return None
-
-    def clear_direct_select_anchors(self):
-        for (hid, shape_iid, idx) in self.direct_select_anchors:
-            self.canvas.delete(hid)
-        self.direct_select_anchors.clear()
-
-    # -------------------------------------------------------------------------
-    # BEND TOOL A (Basic anchor add/remove + move)
-    # -------------------------------------------------------------------------
-    def handle_bend_tool_a_click(self, x, y):
-        # SHIFT+Click => remove anchor if it's near
-        # normal click => add anchor or drag existing anchor
-        # We'll do a similar approach as we did with direct select
-        # but also allow insertion or removal
-        shape_info = None
-        item = self.canvas.find_closest(x, y)
-        if item:
-            sid = item[0]
-            shape_info = self.shape_data.get(sid)
-        # If SHIFT pressed
-        if (self.root.tk.call('tk', 'windowingsystem') != 'win32'):
-            # On some systems, SHIFT mask is different
-            pass
-        # We'll skip the SHIFT detection detail for brevity
-
-        # For demonstration, let's just select the shape and show anchors
-        if shape_info:
-            self.select_item(item[0])
-            self.show_bend_anchors(item[0])
-        else:
+        if not item:
             self.select_item(None)
             self.clear_bend_anchors()
+            return
 
-    def bend_tool_a_drag_anchor(self, x, y):
-        # Move anchor in line-based shape or bounding box for rectangle
+        shape_id = item[0]
+        shape_info = self.shape_data.get(shape_id)
+        if not shape_info:
+            self.select_item(None)
+            self.clear_bend_anchors()
+            return
+
+        # if ALT => add anchor
+        if alt_pressed:
+            if shape_info['type'] in ("line","brush"):
+                self.add_bend_anchor(shape_id, x, y)
+                return
+
+        # if CTRL => warp anchors in BEND_WARP_RADIUS
+        if ctrl_pressed:
+            self.bend_warp_anchors(shape_id, x, y)
+            return
+
+        # Otherwise => show anchors
+        self.select_item(shape_id)
+        self.show_bend_anchors(shape_id)
+
+
+    def find_bend_anchor(self, x, y):
+        """
+        See if (x,y) is close to any anchor squares in bend_anchors.
+        """
+        radius = 6
+        for (hid, sid, idx) in self.bend_anchors:
+            hx1, hy1, hx2, hy2 = self.canvas.coords(hid)
+            if hx1 - radius < x < hx2 + radius and hy1 - radius < y < hy2 + radius:
+                return (sid, idx)
+        return None
+
+    def bend_tool_drag_anchor(self, x, y):
         if not self.bend_drag_anchor:
             return
         shape_info = self.shape_data.get(self.bend_drag_anchor)
@@ -1025,6 +742,7 @@ class SimpleImageEditor:
             self.canvas.coords(self.bend_drag_anchor, x1,y1,x2,y2)
         elif stype == "text":
             self.canvas.coords(self.bend_drag_anchor, coords[0], coords[1])
+
         self.shape_data.update_coords(self.bend_drag_anchor, coords)
         self.update_bend_anchors(self.bend_drag_anchor)
 
@@ -1034,10 +752,11 @@ class SimpleImageEditor:
         if not shape_info:
             return
         coords = shape_info['coords']
-        for i in range(0,len(coords),2):
-            x = coords[i]
-            y = coords[i+1]
-            h = self.canvas.create_rectangle(x-3, y-3, x+3, y+3, fill="red", outline="red")
+        # create squares
+        for i in range(0, len(coords),2):
+            xx = coords[i]
+            yy = coords[i+1]
+            h = self.canvas.create_rectangle(xx-3, yy-3, xx+3, yy+3, fill="red", outline="red")
             self.bend_anchors.append((h, item_id, i))
 
     def update_bend_anchors(self, item_id):
@@ -1056,60 +775,99 @@ class SimpleImageEditor:
             self.canvas.delete(hid)
         self.bend_anchors.clear()
 
-    # -------------------------------------------------------------------------
-    # BEND TOOL B (Warp entire shape in a radius, demonstration)
-    # -------------------------------------------------------------------------
-    def handle_bend_tool_b_click(self, x, y):
-        # For example, find all anchor points in BEND_WARP_RADIUS and push them outward
-        # purely as a demonstration
-        item = self.canvas.find_closest(x, y)
-        if item:
-            sid = item[0]
-            shape_info = self.shape_data.get(sid)
-            if shape_info:
-                coords = shape_info['coords']
-                for i in range(0,len(coords),2):
-                    dx = coords[i] - x
-                    dy = coords[i+1] - y
-                    dist = math.sqrt(dx*dx + dy*dy)
-                    if dist < BEND_WARP_RADIUS:
-                        factor = (BEND_WARP_RADIUS - dist) / BEND_WARP_RADIUS
-                        coords[i] += dx*0.3*factor
-                        coords[i+1] += dy*0.3*factor
-                # update
-                stype = shape_info['type']
-                if stype in ("line","brush"):
-                    self.canvas.coords(sid, *coords)
-                elif stype in ("rectangle","ellipse"):
-                    x1,y1,x2,y2 = self.normalize_rect(coords)
-                    self.canvas.coords(sid, x1,y1,x2,y2)
-                self.shape_data.update_coords(sid, coords)
-                self.push_history("Bend Tool B warp")
+    def add_bend_anchor(self, shape_id, x, y):
+        """
+        Insert a new anchor in the line's coords near x,y,
+        by finding the closest segment to (x,y).
+        """
+        shape_info = self.shape_data.get(shape_id)
+        if not shape_info or shape_info['type'] not in ("line","brush"):
+            return
+        coords = shape_info['coords']
+        if len(coords) < 4:
+            # just append or insert in the middle
+            coords.insert(2, y)
+            coords.insert(2, x)
+            self.canvas.coords(shape_id, *coords)
+            self.shape_data.update_coords(shape_id, coords)
+            self.show_bend_anchors(shape_id)
+            return
+
+        # find best segment
+        best_i = 0
+        best_dist = float("inf")
+        for i in range(0, len(coords)-2, 2):
+            x1,y1 = coords[i], coords[i+1]
+            x2,y2 = coords[i+2], coords[i+3]
+            d = self.point_segment_dist(x,y, x1,y1, x2,y2)
+            if d < best_dist:
+                best_dist = d
+                best_i = i
+        # insert after best_i+1
+        coords.insert(best_i+2, y)
+        coords.insert(best_i+2, x)
+        self.canvas.coords(shape_id, *coords)
+        self.shape_data.update_coords(shape_id, coords)
+        self.show_bend_anchors(shape_id)
+
+    def remove_bend_anchor(self, shape_id, anchor_idx):
+        """
+        If shape has >2 anchors, remove anchor at anchor_idx.
+        """
+        shape_info = self.shape_data.get(shape_id)
+        if not shape_info or shape_info['type'] not in ("line","brush"):
+            return
+        coords = shape_info['coords']
+        if len(coords) <= 4:
+            print("Cannot remove anchor. Would have too few anchors.")
+            return
+        del coords[anchor_idx:anchor_idx+2]
+        self.canvas.coords(shape_id, *coords)
+        self.shape_data.update_coords(shape_id, coords)
+        self.show_bend_anchors(shape_id)
+
+    def bend_warp_anchors(self, shape_id, x, y):
+        """
+        Ctrl+Click => warp anchors near (x,y) in a radius BEND_WARP_RADIUS
+        """
+        shape_info = self.shape_data.get(shape_id)
+        if not shape_info:
+            return
+        coords = shape_info['coords']
+        for i in range(0, len(coords), 2):
+            dx = coords[i] - x
+            dy = coords[i+1] - y
+            dist = math.hypot(dx, dy)
+            if dist < BEND_WARP_RADIUS:
+                factor = (BEND_WARP_RADIUS - dist)/BEND_WARP_RADIUS
+                coords[i] += dx * 0.3 * factor
+                coords[i+1] += dy * 0.3 * factor
+        # update
+        stype = shape_info['type']
+        if stype in ("line","brush"):
+            self.canvas.coords(shape_id, *coords)
+        elif stype in ("rectangle","ellipse"):
+            x1,y1,x2,y2 = self.normalize_rect(coords)
+            self.canvas.coords(shape_id, x1,y1,x2,y2)
+        self.shape_data.update_coords(shape_id, coords)
+        self.show_bend_anchors(shape_id)
+
+
+    def point_segment_dist(self, px, py, x1, y1, x2, y2):
+        seg_len_sq = (x2 - x1)**2 + (y2 - y1)**2
+        if seg_len_sq == 0:
+            return math.hypot(px - x1, py - y1)
+        t = ((px - x1)*(x2 - x1) + (py - y1)*(y2 - y1)) / seg_len_sq
+        if t < 0:
+            return math.hypot(px - x1, py - y1)
+        if t > 1:
+            return math.hypot(px - x2, py - y2)
+        projx = x1 + t*(x2 - x1)
+        projy = y1 + t*(y2 - y1)
+        return math.hypot(px - projx, py - projy)
 
     # -------------------------------------------------------------------------
-    # BEND TOOL C (Insert arcs or advanced anchor editing, demonstration)
-    # -------------------------------------------------------------------------
-    def handle_bend_tool_c_click(self, x, y):
-        # Maybe we pick 2 anchors around the click and insert an arc
-        item = self.canvas.find_closest(x, y)
-        if item:
-            sid = item[0]
-            shape_info = self.shape_data.get(sid)
-            if shape_info and shape_info['type'] in ("line","brush"):
-                # demonstration: insert an arc segment near x,y
-                coords = shape_info['coords']
-                # We'll do a naive approach
-                if len(coords) >= 4:
-                    # insert a midpoint arc
-                    coords.insert(2, y)
-                    coords.insert(2, x)
-                    self.canvas.coords(sid, *coords)
-                    self.shape_data.update_coords(sid, coords)
-                    self.push_history("Bend Tool C arc insert")
-
-
-    # -------------------------------------------------------------------------
-    # SHAPE CREATION (BRUSH, LINE, RECT, ELLIPSE)
+    # SHAPE CREATION
     # -------------------------------------------------------------------------
     def create_brush_segment(self, x, y, layer):
         line_id = self.canvas.create_line(x, y, x+1, y+1, fill=self.stroke_color,
@@ -1118,12 +876,10 @@ class SimpleImageEditor:
         self.shape_data.store(line_id, "brush", [x,y,x+1,y+1],
                               fill=None, outline=self.stroke_color, width=self.brush_size)
         self.select_item(line_id)
-        # We won't push history on every line segment creation
-        # We'll push on mouse up if needed
 
     def finalize_shape_creation(self):
         layer = self.layers[self.current_layer_index]
-        stype = self.current_tool.lower()  # line, rectangle, ellipse
+        stype = self.current_tool.lower()
         layer.add_item(self.temp_item, stype)
         coords = self.canvas.coords(self.temp_item)
         fill_val = None if stype == "line" else self.fill_color
@@ -1132,9 +888,8 @@ class SimpleImageEditor:
         self.select_item(self.temp_item)
         self.temp_item = None
 
-
     # -------------------------------------------------------------------------
-    # ERASERS
+    # ERASER STUFF
     # -------------------------------------------------------------------------
     def erase_item(self, item_id):
         lyr = self.find_layer_of_item(item_id)
@@ -1151,16 +906,14 @@ class SimpleImageEditor:
             return
         stype = shape_info['type']
         if stype not in ("line","brush"):
-            # bounding shapes or text => if corner is in radius => remove shape
             coords = shape_info['coords']
-            removed = False
             for i in range(0,len(coords),2):
                 dx = coords[i] - ex
                 dy = coords[i+1] - ey
-                if math.hypot(dx,dy) < self.eraser_radius:
+                dist = math.hypot(dx, dy)
+                if dist < self.eraser_radius:
                     self.erase_item(item_id)
-                    removed = True
-                    break
+                    return
             return
 
         coords = shape_info['coords']
@@ -1168,39 +921,27 @@ class SimpleImageEditor:
         for i in range(0,len(coords),2):
             dx = coords[i] - ex
             dy = coords[i+1] - ey
-            dist = math.hypot(dx,dy)
+            dist = math.hypot(dx, dy)
             if dist >= self.eraser_radius:
                 new_points.append(coords[i])
                 new_points.append(coords[i+1])
         if len(new_points) < 4:
-            # if fewer than 2 anchors => remove
             self.erase_item(item_id)
             return
-        # just keep new shape
         self.canvas.coords(item_id, *new_points)
         self.shape_data.update_coords(item_id, new_points)
 
     def soft_erase_shape(self, item_id):
-        """
-        Fake a "soft erase" by adjusting the shape's color toward background color.
-        In real usage, alpha blending on Tkinter Canvas is limited. We'll do a naive approach:
-         - If shape has an outline color, we step it toward #ffffff or #dddddd
-         - If fill, we step it as well
-        This is just a demonstration.
-        """
         shape_info = self.shape_data.get(item_id)
         if not shape_info:
             return
-        # We'll define a helper that steps color channels
+
         def fade_color(hexcol):
-            # parse #rrggbb
             if not hexcol or len(hexcol) != 7:
                 return hexcol
             r = int(hexcol[1:3], 16)
             g = int(hexcol[3:5], 16)
             b = int(hexcol[5:7], 16)
-            # step each channel by soft_eraser_fade_step
-            # approaching white
             target = 255
             def fade_channel(c):
                 diff = target - c
@@ -1208,8 +949,7 @@ class SimpleImageEditor:
                     return target
                 if diff > 0:
                     return c + self.soft_eraser_fade_step
-                else:
-                    return c - self.soft_eraser_fade_step
+                return c - self.soft_eraser_fade_step
             nr = fade_channel(r)
             ng = fade_channel(g)
             nb = fade_channel(b)
@@ -1221,15 +961,13 @@ class SimpleImageEditor:
         new_fill = fade_color(old_fill)
         shape_info['outline'] = new_outline
         shape_info['fill'] = new_fill
-        # apply
         if new_outline:
             self.canvas.itemconfig(item_id, outline=new_outline)
         if new_fill:
             self.canvas.itemconfig(item_id, fill=new_fill)
 
-
     # -------------------------------------------------------------------------
-    # MISC UTILS
+    # UTILS
     # -------------------------------------------------------------------------
     def find_layer_of_item(self, item_id):
         for lyr in self.layers:
@@ -1249,11 +987,16 @@ class SimpleImageEditor:
                     pass
         self.selected_item = item_id
         if item_id:
-            # highlight
             try:
                 self.canvas.itemconfig(item_id, width=max(self.brush_size+2,3))
             except:
                 pass
+
+    @staticmethod
+    def normalize_rect(c):
+        x1, y1, x2, y2 = c
+        return (min(x1,x2), min(y1,y2),
+                max(x1,x2), max(y1,y2))
 
     def pick_stroke_color(self):
         c = colorchooser.askcolor(title="Choose Stroke Color", initialcolor=self.stroke_color)
@@ -1278,14 +1021,8 @@ class SimpleImageEditor:
         except ValueError:
             pass
 
-    @staticmethod
-    def normalize_rect(c):
-        x1, y1, x2, y2 = c
-        return (min(x1,x2), min(y1,y2),
-                max(x1,x2), max(y1,y2))
-
     # -------------------------------------------------------------------------
-    # UNDO/REDO KEY BINDINGS
+    # UNDO/REDO
     # -------------------------------------------------------------------------
     def on_ctrl_z(self, event=None):
         self.do_undo()
@@ -1308,7 +1045,7 @@ class SimpleImageEditor:
             self.history_listbox.selection_set(self.history.current_index)
 
     # -------------------------------------------------------------------------
-    # OPEN & SAVE
+    # OPEN / SAVE
     # -------------------------------------------------------------------------
     def open_image_layer(self):
         fp = filedialog.askopenfilename(
@@ -1326,6 +1063,7 @@ class SimpleImageEditor:
         layer_name = "ImageLayer_" + fp.split('/')[-1]
         self.add_layer(layer_name)
         iid = self.canvas.create_image(0,0,anchor=tk.NW, image=tk_img)
+        # keep reference
         self.canvas.image = tk_img
         self.shape_data.store(iid, "image", [0,0], fill=None, outline=None, width=1)
         self.layers[0].add_item(iid, "image")
@@ -1335,7 +1073,7 @@ class SimpleImageEditor:
         fp = filedialog.asksaveasfilename(
             title="Save Image",
             defaultextension=".png",
-            filetypes=[("PNG Files","*.png"), ("All Files","*.*")]
+            filetypes=[("PNG Files","*.png"),("All Files","*.*")]
         )
         if not fp:
             return
@@ -1349,7 +1087,7 @@ class SimpleImageEditor:
             import pyscreenshot as ImageGrab
             snap = ImageGrab.grab(bbox=(x0,y0,x1,y1))
             snap.save(fp)
-            print("Saved canvas snapshot to", fp)
+            print("Saved snapshot to", fp)
         except ImportError:
             print("pyscreenshot not installed.")
         except Exception as e:
