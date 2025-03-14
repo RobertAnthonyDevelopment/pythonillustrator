@@ -550,11 +550,34 @@ class SimpleImageEditor:
             self.selected_items = {txt}
             self.highlight_selection()
             self.push_history("Created text")
-        elif self.current_tool in ("Sharp Eraser", "Round Eraser", "Soft Eraser"):
+        # Modified eraser handling:
+        elif self.current_tool == "Sharp Eraser":
             it = self.canvas.find_closest(event.x, event.y)
             if it:
-                self.erase_item(it[0])
-                self.push_history(f"{self.current_tool} used")
+                shape = self.shape_data.get(it[0])
+                if shape and shape['type'] in ("line", "brush", "bending_line"):
+                    # Use a smaller effective radius for sharp eraser
+                    self.round_erase_anchor_points(it[0], event.x, event.y, radius=ERASER_RADIUS * 0.5)
+                else:
+                    # For other types, do nothing or optionally erase completely
+                    pass
+                self.push_history("Sharp Eraser used")
+        elif self.current_tool == "Round Eraser":
+            it = self.canvas.find_closest(event.x, event.y)
+            if it:
+                shape = self.shape_data.get(it[0])
+                if shape and shape['type'] in ("line", "brush", "bending_line"):
+                    self.round_erase_anchor_points(it[0], event.x, event.y, radius=ERASER_RADIUS)
+                else:
+                    pass
+                self.push_history("Round Eraser used")
+        elif self.current_tool == "Soft Eraser":
+            it = self.canvas.find_closest(event.x, event.y)
+            if it:
+                shape = self.shape_data.get(it[0])
+                if shape:
+                    self.soft_erase_shape(it[0])
+                self.push_history("Soft Eraser used")
         if self.current_tool == "Select" and not self.canvas.find_closest(event.x, event.y):
             self.select_rect_id = self.canvas.create_rectangle(event.x, event.y, event.x, event.y,
                                                                 outline="gray", dash=(2,2))
@@ -742,7 +765,7 @@ class SimpleImageEditor:
         except Exception as e:
             messagebox.showerror("Error", f"Error saving snapshot: {e}")
 
-    # --------------------- DRAW BENDING LINE (Tool C) -----------------------
+    # --------------------- DRAW BENDING LINE (Tool C) METHODS ----------------
     def handle_draw_bending_line_down(self, x, y):
         self.temp_item = self.canvas.create_line(x, y, x, y,
                                                   fill=self.stroke_color,
@@ -799,35 +822,24 @@ class SimpleImageEditor:
         self.temp_item = None
 
     # --------------------- ERASER METHODS ----------------------------------
-    def erase_item(self, item_id):
-        layer = self.find_layer_of_item(item_id)
-        if layer:
-            layer.remove_item(item_id)
-        self.shape_data.remove(item_id)
-        self.canvas.delete(item_id)
-        if item_id in self.selected_items:
-            self.selected_items.remove(item_id)
-
-    def round_erase_anchor_points(self, item_id, ex, ey):
+    # This function now takes an extra 'radius' parameter (defaulting to ERASER_RADIUS)
+    def round_erase_anchor_points(self, item_id, ex, ey, radius=ERASER_RADIUS):
         shape = self.shape_data.get(item_id)
         if not shape:
             return
-        stype = shape['type']
-        if stype not in ("line", "brush", "bending_line"):
-            coords = shape['coords']
-            for i in range(0, len(coords), 2):
-                if math.hypot(coords[i] - ex, coords[i + 1] - ey) < ERASER_RADIUS:
-                    self.erase_item(item_id)
-                    return
+        # Only operate on line-like shapes
+        if shape['type'] not in ("line", "brush", "bending_line"):
             return
         coords = shape['coords']
         new_coords = []
         for i in range(0, len(coords), 2):
-            if math.hypot(coords[i] - ex, coords[i + 1] - ey) >= ERASER_RADIUS:
+            if math.hypot(coords[i] - ex, coords[i + 1] - ey) >= radius:
                 new_coords.extend([coords[i], coords[i + 1]])
+        # If fewer than 2 points remain, remove the shape entirely
         if len(new_coords) < 4:
             self.erase_item(item_id)
             return
+        # Otherwise update the shape
         self.canvas.coords(item_id, *new_coords)
         self.shape_data.update_coords(item_id, new_coords)
 
@@ -856,6 +868,16 @@ class SimpleImageEditor:
             self.canvas.itemconfig(item_id, outline=new_outline)
         if new_fill:
             self.canvas.itemconfig(item_id, fill=new_fill)
+
+    # For non-erasing operations we use this helper:
+    def erase_item(self, item_id):
+        layer = self.find_layer_of_item(item_id)
+        if layer:
+            layer.remove_item(item_id)
+        self.shape_data.remove(item_id)
+        self.canvas.delete(item_id)
+        if item_id in self.selected_items:
+            self.selected_items.remove(item_id)
 
     # --------------------- UTILITY METHODS ---------------------------------
     def find_layer_of_item(self, item_id):
@@ -1358,3 +1380,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = SimpleImageEditor(root)
     root.mainloop()
+
