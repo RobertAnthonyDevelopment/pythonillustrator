@@ -148,12 +148,12 @@ class SimpleImageEditor:
     """
     The main editor class.
     Features:
-      - Drawing basic shapes (line, rectangle, ellipse, brush, text, image)
+      - Drawing basic shapes (line, rectangle, ellipse, brush, text)
       - Anchor management (Direct Select and Add Anchor)
       - Bending tools A (push/anchor drag), B (arc bend), and C (freeform bending line)
       - Multi-selection and grouping (via Group or Ctrl+G)
       - Auto-connection of nearby line endpoints
-      - Robust image open/save
+      - Robust canvas saving
     """
     def __init__(self, root):
         self.root = root
@@ -191,6 +191,10 @@ class SimpleImageEditor:
         self.bendB_dragging_anchor_idx = None
         self.initial_angle = None
 
+        # Variables for Direct Select tool (for selecting anchor points)
+        self.direct_select_dragging_anchor = None
+        self.direct_select_drag_index = None
+
         # Image references (to prevent GC)
         self.loaded_images = {}
 
@@ -207,10 +211,10 @@ class SimpleImageEditor:
         self.push_history("Initial Setup")
 
         # Bind keys (unused argument warnings are suppressed)
-        self.root.bind("<Control-z>", self.on_ctrl_z)  # pylint: disable=unused-argument
-        self.root.bind("<Control-y>", self.on_ctrl_y)  # pylint: disable=unused-argument
-        self.root.bind("<Control-g>", self.group_selected_items)  # pylint: disable=unused-argument
-        self.canvas.bind("<KeyPress-a>", self.on_key_toggle_anchor)  # pylint: disable=unused-argument
+        self.root.bind("<Control-z>", self.on_ctrl_z)
+        self.root.bind("<Control-y>", self.on_ctrl_y)
+        self.root.bind("<Control-g>", self.group_selected_items)
+        self.canvas.bind("<KeyPress-a>", self.on_key_toggle_anchor)
         self.canvas.focus_set()
 
     # -------------------- UI BUILD METHODS -----------------------------
@@ -235,7 +239,7 @@ class SimpleImageEditor:
             b.pack(pady=5, fill=tk.X)
             self.tool_buttons[tool] = b
         ttk.Button(self.toolbar_frame, text="Add Layer", command=self.add_layer).pack(pady=5, fill=tk.X)
-        ttk.Button(self.toolbar_frame, text="Open Image", command=self.open_image_layer).pack(pady=5, fill=tk.X)
+        # The "Open Image" button has been removed.
         ttk.Button(self.toolbar_frame, text="Save Canvas", command=self.save_canvas_snapshot).pack(pady=5, fill=tk.X)
 
     def select_tool(self, tool_name):
@@ -507,7 +511,7 @@ class SimpleImageEditor:
                 for (iid, _) in lyr.items:
                     self.canvas.itemconfigure(iid, state=tk.HIDDEN)
 
-    # --------------------- Mouse Event Methods -----------------------------
+    # --------------------- MOUSE EVENT METHODS -----------------------------
     def on_left_down(self, event):
         if self.current_layer_index is None:
             if self.layers:
@@ -647,21 +651,44 @@ class SimpleImageEditor:
             self.finalize_shape_creation()
             self.push_history(f"Created {self.current_tool}")
 
-    # --------------------- MOVE ENTIRE SHAPE METHOD -------------------------
-    def move_entire_shape(self, x, y):
-        dx = x - self.last_x
-        dy = y - self.last_y
-        for item in self.selected_items.copy():
-            try:
-                self.canvas.move(item, dx, dy)
-                shape = self.shape_data.get(item)
-                if shape:
-                    new_coords = [coord + dx if i % 2 == 0 else coord + dy for i, coord in enumerate(shape['coords'])]
-                    self.canvas.coords(item, *new_coords)
-                    self.shape_data.update_coords(item, new_coords)
-            except Exception as e:
-                print(f"Error moving item {item}: {e}")
-        self.last_x, self.last_y = x, y
+    # --------------------- DIRECT SELECT METHODS ---------------------------
+    def handle_direct_select_down(self, x, y):
+        # First, check if an anchor rectangle is clicked
+        found = None
+        if hasattr(self, "direct_select_anchors"):
+            for (hid, sid, idx) in self.direct_select_anchors:
+                bbox = self.canvas.coords(hid)
+                if x >= bbox[0] and x <= bbox[2] and y >= bbox[1] and y <= bbox[3]:
+                    found = (sid, idx)
+                    break
+        if found:
+            self.direct_select_dragging_anchor = found
+            self.direct_select_drag_index = found[1]
+        else:
+            # If no anchor is hit, select the shape under the pointer and show its anchors
+            it = self.canvas.find_closest(x, y)
+            if it:
+                sid = it[0]
+                shape = self.shape_data.get(sid)
+                if shape and "anchors" in shape:
+                    self.selected_items = {sid}
+                    self.show_direct_select_anchors(sid)
+                    self.direct_select_dragging_anchor = None
+                    self.direct_select_drag_index = None
+
+    def handle_direct_select_drag(self, x, y):
+        if not self.direct_select_dragging_anchor:
+            return
+        sid, idx = self.direct_select_dragging_anchor
+        shape = self.shape_data.get(sid)
+        if not shape:
+            return
+        coords = shape["coords"]
+        coords[idx] = x
+        coords[idx + 1] = y
+        self.canvas.coords(sid, *coords)
+        self.shape_data.update_coords(sid, coords)
+        self.update_direct_select_anchors(sid)
 
     # --------------------- UTILITY METHODS -------------------------------
     @staticmethod
@@ -691,287 +718,7 @@ class SimpleImageEditor:
             pass
 
     # --------------------- OPEN / SAVE METHODS ----------------------------
-    def open_image_layer(self):
-        fp = filedialog.askopenfilename(
-            title="Open Image",
-            filetypes=(("Image Files", "*.png;*.jpg;*.jpeg;*.gif;*.bmp"), ("All Files", "*.*"))
-        )
-        if not fp:
-            return
-        if not PIL_AVAILABLE:
-            messagebox.showerror("Error", "Pillow is not installed. Cannot open image.")
-            return
-        try:
-            from PIL import Image
-            img = Image.open(fp)
-            tkimg = ImageTk.PhotoImage(img)
-        except Exception as e:
-            messagebox.showerror("Error", f"Error loading image: {e}")
-            return
-        if self.current_layer_index is None:
-            if not self.layers:
-                self.add_layer("Layer 1")
-            else:
-                self.current_layer_index = 0
-        layer = self.layers[self.current_layer_index]
-        iid = self.canvas.create_image(0, 0, anchor=tk.NW, image=tkimg)
-        self.loaded_images[iid] = tkimg
-        self.shape_data.store(iid, "image", [0, 0], None, None, 1)
-        layer.add_item(iid, "image")
-        self.push_history(f"Opened image {fp}")
-
-    def save_canvas_snapshot(self):
-        fp = filedialog.asksaveasfilename(
-            title="Save",
-            defaultextension=".png",
-            filetypes=(("PNG Files", "*.png"), ("All Files", "*.*"))
-        )
-        if not fp:
-            return
-        self.canvas.update()
-        x0 = self.root.winfo_rootx() + self.canvas.winfo_x()
-        y0 = self.root.winfo_rooty() + self.canvas.winfo_y()
-        x1 = x0 + self.canvas.winfo_width()
-        y1 = y0 + self.canvas.winfo_height()
-        try:
-            import pyscreenshot as ImageGrab
-            shot = ImageGrab.grab(bbox=(x0, y0, x1, y1))
-            shot.save(fp)
-            print("Saved snapshot to", fp)
-        except ImportError:
-            messagebox.showerror("Error", "pyscreenshot not installed. Cannot save snapshot.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Error saving snapshot: {e}")
-
-    # --------------------- DRAW BENDING LINE (Tool C) -----------------------
-    def handle_draw_bending_line_down(self, x, y):
-        self.temp_item = self.canvas.create_line(x, y, x, y,
-                                                  fill=self.stroke_color,
-                                                  width=self.brush_size,
-                                                  smooth=True, splinesteps=36)
-        if self.current_layer_index is None:
-            return
-        self.layers[self.current_layer_index].add_item(self.temp_item, "bending_line")
-        self.shape_data.store(self.temp_item, "bending_line", [x, y],
-                              None, self.stroke_color, self.brush_size)
-        self.shape_data.shapes[self.temp_item]['anchors'].append(0)
-        self.last_x, self.last_y = x, y
-
-    def handle_draw_bending_line_drag(self, x, y):
-        if self.temp_item is None:
-            return
-        coords = self.canvas.coords(self.temp_item)
-        coords.extend([x, y])
-        self.canvas.coords(self.temp_item, *coords)
-        self.shape_data.update_coords(self.temp_item, coords)
-        anchor_indices = self.shape_data.shapes[self.temp_item]['anchors']
-        if (len(coords) - 2) not in anchor_indices:
-            anchor_indices.append(len(coords) - 2)
-            anchor_indices.sort()
-        self.last_x, self.last_y = x, y
-
-    def handle_draw_bending_line_up(self):
-        if self.temp_item is None:
-            return
-        self.push_history("Drew bending line")
-        self.temp_item = None
-
-    # --------------------- SHAPE CREATION METHODS --------------------------
-    def create_brush_segment(self, x, y, layer):
-        ln = self.canvas.create_line(x, y, x + 1, y + 1,
-                                     fill=self.stroke_color,
-                                     width=self.brush_size,
-                                     smooth=True, splinesteps=36)
-        layer.add_item(ln, "brush")
-        self.shape_data.store(ln, "brush", [x, y, x + 1, y + 1],
-                              None, self.stroke_color, self.brush_size)
-        self.selected_items = {ln}
-        self.highlight_selection()
-
-    def finalize_shape_creation(self):
-        layer = self.layers[self.current_layer_index]
-        stype = self.current_tool.lower()
-        layer.add_item(self.temp_item, stype)
-        coords = self.canvas.coords(self.temp_item)
-        fill_val = None if stype == "line" else self.fill_color
-        self.shape_data.store(self.temp_item, stype, coords,
-                              fill_val, self.stroke_color, self.brush_size)
-        self.selected_items = {self.temp_item}
-        self.highlight_selection()
-        self.temp_item = None
-
-    # --------------------- ERASER METHODS ----------------------------------
-    def erase_item(self, item_id):
-        layer = self.find_layer_of_item(item_id)
-        if layer:
-            layer.remove_item(item_id)
-        self.shape_data.remove(item_id)
-        self.canvas.delete(item_id)
-        if item_id in self.selected_items:
-            self.selected_items.remove(item_id)
-
-    def round_erase_anchor_points(self, item_id, ex, ey):
-        shape = self.shape_data.get(item_id)
-        if not shape:
-            return
-        stype = shape['type']
-        if stype not in ("line", "brush", "bending_line"):
-            coords = shape['coords']
-            for i in range(0, len(coords), 2):
-                if math.hypot(coords[i] - ex, coords[i + 1] - ey) < ERASER_RADIUS:
-                    self.erase_item(item_id)
-                    return
-            return
-        coords = shape['coords']
-        new_coords = []
-        for i in range(0, len(coords), 2):
-            if math.hypot(coords[i] - ex, coords[i + 1] - ey) >= ERASER_RADIUS:
-                new_coords.extend([coords[i], coords[i + 1]])
-        if len(new_coords) < 4:
-            self.erase_item(item_id)
-            return
-        self.canvas.coords(item_id, *new_coords)
-        self.shape_data.update_coords(item_id, new_coords)
-
-    def soft_erase_shape(self, item_id):
-        shape = self.shape_data.get(item_id)
-        if not shape:
-            return
-        def fade_color(hc):
-            if not hc or len(hc) != 7:
-                return hc
-            r = int(hc[1:3], 16)
-            g = int(hc[3:5], 16)
-            b = int(hc[5:7], 16)
-            target = 255
-            def fch(c):
-                diff = target - c
-                if abs(diff) < SOFT_ERASER_FADE_STEP:
-                    return target
-                return c + SOFT_ERASER_FADE_STEP if diff > 0 else c - SOFT_ERASER_FADE_STEP
-            return f"#{fch(r):02x}{fch(g):02x}{fch(b):02x}"
-        new_outline = fade_color(shape['outline'])
-        new_fill = fade_color(shape['fill'])
-        shape['outline'] = new_outline
-        shape['fill'] = new_fill
-        if new_outline:
-            self.canvas.itemconfig(item_id, outline=new_outline)
-        if new_fill:
-            self.canvas.itemconfig(item_id, fill=new_fill)
-
-    # --------------------- UTILITY METHODS ---------------------------------
-    def find_layer_of_item(self, item_id):
-        for layer in self.layers:
-            for (iid, _) in layer.items:
-                if iid == item_id:
-                    return layer
-        return None
-
-    def highlight_selection(self):
-        # Reset all items
-        for item in self.canvas.find_all():
-            try:
-                base_width = self.shape_data.get(item)['width']
-                self.canvas.itemconfig(item, width=base_width)
-            except Exception:
-                pass
-        # Highlight selected ones
-        for sid in self.selected_items:
-            try:
-                base_width = self.shape_data.get(sid)['width']
-                self.canvas.itemconfig(sid, width=max(base_width + 2, 3))
-            except Exception:
-                pass
-
-    def handle_select_click(self, x, y, add=False):
-        it = self.canvas.find_closest(x, y)
-        if it:
-            iid = it[0]
-            layer = self.find_layer_of_item(iid)
-            if layer and not layer.locked:
-                if add:
-                    self.selected_items.add(iid)
-                else:
-                    self.selected_items = {iid}
-                self.highlight_selection()
-            else:
-                self.selected_items.clear()
-                self.highlight_selection()
-        else:
-            self.selected_items.clear()
-            self.highlight_selection()
-
-    def move_entire_shape(self, x, y):
-        dx = x - self.last_x
-        dy = y - self.last_y
-        for item in self.selected_items.copy():
-            try:
-                self.canvas.move(item, dx, dy)
-                shape = self.shape_data.get(item)
-                if shape:
-                    new_coords = [coord + dx if i % 2 == 0 else coord + dy for i, coord in enumerate(shape['coords'])]
-                    self.canvas.coords(item, *new_coords)
-                    self.shape_data.update_coords(item, new_coords)
-            except Exception as e:
-                print(f"Error moving item {item}: {e}")
-        self.last_x, self.last_y = x, y
-
-    @staticmethod
-    def normalize_rect(c):
-        x1, y1, x2, y2 = c
-        return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-
-    def pick_stroke_color(self):
-        col = colorchooser.askcolor(title="Stroke Color", initialcolor=self.stroke_color)
-        if col and col[1]:
-            self.stroke_color = col[1]
-            self.stroke_btn.config(bg=self.stroke_color)
-
-    def pick_fill_color(self):
-        col = colorchooser.askcolor(title="Fill Color", initialcolor=self.fill_color)
-        if col and col[1]:
-            self.fill_color = col[1]
-            self.fill_btn.config(bg=self.fill_color)
-
-    def on_brush_size_change(self, event=None):
-        self.brush_size = int(float(self.brush_size_slider.get()))
-
-    def on_font_size_change(self):
-        try:
-            self.font_size = int(self.font_size_spin.get())
-        except Exception:
-            pass
-
-    # --------------------- OPEN / SAVE METHODS ----------------------------
-    def open_image_layer(self):
-        fp = filedialog.askopenfilename(
-            title="Open Image",
-            filetypes=(("Image Files", "*.png;*.jpg;*.jpeg;*.gif;*.bmp"), ("All Files", "*.*"))
-        )
-        if not fp:
-            return
-        if not PIL_AVAILABLE:
-            messagebox.showerror("Error", "Pillow is not installed. Cannot open image.")
-            return
-        try:
-            from PIL import Image
-            img = Image.open(fp)
-            tkimg = ImageTk.PhotoImage(img)
-        except Exception as e:
-            messagebox.showerror("Error", f"Error loading image: {e}")
-            return
-        if self.current_layer_index is None:
-            if not self.layers:
-                self.add_layer("Layer 1")
-            else:
-                self.current_layer_index = 0
-        layer = self.layers[self.current_layer_index]
-        iid = self.canvas.create_image(0, 0, anchor=tk.NW, image=tkimg)
-        self.loaded_images[iid] = tkimg
-        self.shape_data.store(iid, "image", [0, 0], None, None, 1)
-        layer.add_item(iid, "image")
-        self.push_history(f"Opened image {fp}")
-
+    # The open_image_layer method has been removed.
     def save_canvas_snapshot(self):
         fp = filedialog.asksaveasfilename(
             title="Save",
@@ -1051,7 +798,7 @@ class SimpleImageEditor:
         self.highlight_selection()
         self.temp_item = None
 
-    # --------------------- ERASER METHODS -------------------------------
+    # --------------------- ERASER METHODS ----------------------------------
     def erase_item(self, item_id):
         layer = self.find_layer_of_item(item_id)
         if layer:
@@ -1110,7 +857,7 @@ class SimpleImageEditor:
         if new_fill:
             self.canvas.itemconfig(item_id, fill=new_fill)
 
-    # --------------------- UTILITY METHODS -------------------------------
+    # --------------------- UTILITY METHODS ---------------------------------
     def find_layer_of_item(self, item_id):
         for layer in self.layers:
             for (iid, _) in layer.items:
@@ -1166,7 +913,7 @@ class SimpleImageEditor:
                 print(f"Error moving item {item}: {e}")
         self.last_x, self.last_y = x, y
 
-    # --------------------- DIRECT SELECT METHODS ---------------------------
+    # --------------------- DIRECT SELECT ANCHOR METHODS ---------------------
     def clear_direct_select_anchors(self):
         for (hid, _, _) in getattr(self, "direct_select_anchors", []):
             self.canvas.delete(hid)
@@ -1548,174 +1295,6 @@ class SimpleImageEditor:
         projy = y1 + t * (y2 - y1)
         return math.hypot(px - projx, py - projy)
 
-    # --------------------- DRAW BENDING LINE (Tool C) -----------------------
-    def handle_draw_bending_line_down(self, x, y):
-        self.temp_item = self.canvas.create_line(x, y, x, y,
-                                                  fill=self.stroke_color,
-                                                  width=self.brush_size,
-                                                  smooth=True, splinesteps=36)
-        if self.current_layer_index is None:
-            return
-        self.layers[self.current_layer_index].add_item(self.temp_item, "bending_line")
-        self.shape_data.store(self.temp_item, "bending_line", [x, y],
-                              None, self.stroke_color, self.brush_size)
-        self.shape_data.shapes[self.temp_item]['anchors'].append(0)
-        self.last_x, self.last_y = x, y
-
-    def handle_draw_bending_line_drag(self, x, y):
-        if self.temp_item is None:
-            return
-        coords = self.canvas.coords(self.temp_item)
-        coords.extend([x, y])
-        self.canvas.coords(self.temp_item, *coords)
-        self.shape_data.update_coords(self.temp_item, coords)
-        anchor_indices = self.shape_data.shapes[self.temp_item]['anchors']
-        if (len(coords) - 2) not in anchor_indices:
-            anchor_indices.append(len(coords) - 2)
-            anchor_indices.sort()
-        self.last_x, self.last_y = x, y
-
-    def handle_draw_bending_line_up(self):
-        if self.temp_item is None:
-            return
-        self.push_history("Drew bending line")
-        self.temp_item = None
-
-    # --------------------- SHAPE CREATION METHODS --------------------------
-    def create_brush_segment(self, x, y, layer):
-        ln = self.canvas.create_line(x, y, x + 1, y + 1,
-                                     fill=self.stroke_color,
-                                     width=self.brush_size,
-                                     smooth=True, splinesteps=36)
-        layer.add_item(ln, "brush")
-        self.shape_data.store(ln, "brush", [x, y, x + 1, y + 1],
-                              None, self.stroke_color, self.brush_size)
-        self.selected_items = {ln}
-        self.highlight_selection()
-
-    def finalize_shape_creation(self):
-        layer = self.layers[self.current_layer_index]
-        stype = self.current_tool.lower()
-        layer.add_item(self.temp_item, stype)
-        coords = self.canvas.coords(self.temp_item)
-        fill_val = None if stype == "line" else self.fill_color
-        self.shape_data.store(self.temp_item, stype, coords, fill_val, self.stroke_color, self.brush_size)
-        self.selected_items = {self.temp_item}
-        self.highlight_selection()
-        self.temp_item = None
-
-    # --------------------- ERASER METHODS -------------------------------
-    def erase_item(self, item_id):
-        layer = self.find_layer_of_item(item_id)
-        if layer:
-            layer.remove_item(item_id)
-        self.shape_data.remove(item_id)
-        self.canvas.delete(item_id)
-        if item_id in self.selected_items:
-            self.selected_items.remove(item_id)
-
-    def round_erase_anchor_points(self, item_id, ex, ey):
-        shape = self.shape_data.get(item_id)
-        if not shape:
-            return
-        stype = shape['type']
-        if stype not in ("line", "brush", "bending_line"):
-            coords = shape['coords']
-            for i in range(0, len(coords), 2):
-                if math.hypot(coords[i] - ex, coords[i + 1] - ey) < ERASER_RADIUS:
-                    self.erase_item(item_id)
-                    return
-            return
-        coords = shape['coords']
-        new_coords = []
-        for i in range(0, len(coords), 2):
-            if math.hypot(coords[i] - ex, coords[i + 1] - ey) >= ERASER_RADIUS:
-                new_coords.extend([coords[i], coords[i + 1]])
-        if len(new_coords) < 4:
-            self.erase_item(item_id)
-            return
-        self.canvas.coords(item_id, *new_coords)
-        self.shape_data.update_coords(item_id, new_coords)
-
-    def soft_erase_shape(self, item_id):
-        shape = self.shape_data.get(item_id)
-        if not shape:
-            return
-        def fade_color(hc):
-            if not hc or len(hc) != 7:
-                return hc
-            r = int(hc[1:3], 16)
-            g = int(hc[3:5], 16)
-            b = int(hc[5:7], 16)
-            target = 255
-            def fch(c):
-                diff = target - c
-                if abs(diff) < SOFT_ERASER_FADE_STEP:
-                    return target
-                return c + SOFT_ERASER_FADE_STEP if diff > 0 else c - SOFT_ERASER_FADE_STEP
-            return f"#{fch(r):02x}{fch(g):02x}{fch(b):02x}"
-        new_outline = fade_color(shape['outline'])
-        new_fill = fade_color(shape['fill'])
-        shape['outline'] = new_outline
-        shape['fill'] = new_fill
-        if new_outline:
-            self.canvas.itemconfig(item_id, outline=new_outline)
-        if new_fill:
-            self.canvas.itemconfig(item_id, fill=new_fill)
-
-    # --------------------- OPEN / SAVE METHODS ----------------------------
-    def open_image_layer(self):
-        fp = filedialog.askopenfilename(
-            title="Open Image",
-            filetypes=(("Image Files", "*.png;*.jpg;*.jpeg;*.gif;*.bmp"), ("All Files", "*.*"))
-        )
-        if not fp:
-            return
-        if not PIL_AVAILABLE:
-            messagebox.showerror("Error", "Pillow is not installed. Cannot open image.")
-            return
-        try:
-            from PIL import Image
-            img = Image.open(fp)
-            tkimg = ImageTk.PhotoImage(img)
-        except Exception as e:
-            messagebox.showerror("Error", f"Error loading image: {e}")
-            return
-        if self.current_layer_index is None:
-            if not self.layers:
-                self.add_layer("Layer 1")
-            else:
-                self.current_layer_index = 0
-        layer = self.layers[self.current_layer_index]
-        iid = self.canvas.create_image(0, 0, anchor=tk.NW, image=tkimg)
-        self.loaded_images[iid] = tkimg
-        self.shape_data.store(iid, "image", [0, 0], None, None, 1)
-        layer.add_item(iid, "image")
-        self.push_history(f"Opened image {fp}")
-
-    def save_canvas_snapshot(self):
-        fp = filedialog.asksaveasfilename(
-            title="Save",
-            defaultextension=".png",
-            filetypes=(("PNG Files", "*.png"), ("All Files", "*.*"))
-        )
-        if not fp:
-            return
-        self.canvas.update()
-        x0 = self.root.winfo_rootx() + self.canvas.winfo_x()
-        y0 = self.root.winfo_rooty() + self.canvas.winfo_y()
-        x1 = x0 + self.canvas.winfo_width()
-        y1 = y0 + self.canvas.winfo_height()
-        try:
-            import pyscreenshot as ImageGrab
-            shot = ImageGrab.grab(bbox=(x0, y0, x1, y1))
-            shot.save(fp)
-            print("Saved snapshot to", fp)
-        except ImportError:
-            messagebox.showerror("Error", "pyscreenshot not installed. Cannot save snapshot.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Error saving snapshot: {e}")
-
     # --------------------- DRAW BENDING LINE (Tool C) METHODS ----------------
     def handle_draw_bending_line_down(self, x, y):
         self.temp_item = self.canvas.create_line(x, y, x, y,
@@ -1779,4 +1358,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = SimpleImageEditor(root)
     root.mainloop()
-
