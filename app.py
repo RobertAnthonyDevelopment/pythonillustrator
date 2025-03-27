@@ -1,15 +1,15 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, colorchooser, messagebox
+from tkinter import ttk, filedialog, colorchooser, messagebox, simpledialog
 import copy
 import math
 
-# Attempt Pillow import for image support
+# Attempt Pillow import for image support (still available for other parts if needed)
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageDraw, ImageFont
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
-    print("Warning: Pillow (PIL) not installed. Opening images may fail.")
+    print("Warning: Pillow (PIL) not installed. Some features may fail.")
 
 # ------------------------------------------------------------------------------
 # GLOBAL CONSTANTS
@@ -26,10 +26,49 @@ SOFT_ERASER_FADE_STEP = 20
 # Bend tool parameters (adjust as needed)
 BEND_RADIUS_A = 60.0   # Tool A: push/anchor-drag bending
 BEND_RADIUS_B = 50.0   # Tool B: arc-based bending
-# Tool C is used for drawing freeform bending lines
 
 # Threshold (pixels) for auto-connecting endpoints
 CONNECT_THRESHOLD = 10
+
+# ------------------------------------------------------------------------------
+# TEXT EDITOR DIALOG CLASS
+# ------------------------------------------------------------------------------
+class TextEditorDialog(simpledialog.Dialog):
+    def __init__(self, parent, title="Edit Text", initial_props=None):
+        self.initial_props = initial_props or {
+            "text": "",
+            "font": "Arial",
+            "font_size": DEFAULT_FONT_SIZE,
+            "fill": DEFAULT_STROKE_COLOR
+            # Rotation and vertical options omitted in this simpler version.
+        }
+        super().__init__(parent, title)
+
+    def body(self, master):
+        tk.Label(master, text="Text:").grid(row=0, column=0, sticky="w")
+        self.text_var = tk.StringVar(value=self.initial_props["text"])
+        tk.Entry(master, textvariable=self.text_var, width=40).grid(row=0, column=1)
+        
+        tk.Label(master, text="Font:").grid(row=1, column=0, sticky="w")
+        self.font_var = tk.StringVar(value=self.initial_props["font"])
+        tk.Entry(master, textvariable=self.font_var).grid(row=1, column=1)
+        
+        tk.Label(master, text="Font Size:").grid(row=2, column=0, sticky="w")
+        self.size_var = tk.IntVar(value=self.initial_props["font_size"])
+        tk.Entry(master, textvariable=self.size_var).grid(row=2, column=1)
+        
+        tk.Label(master, text="Fill Color:").grid(row=3, column=0, sticky="w")
+        self.fill_var = tk.StringVar(value=self.initial_props["fill"])
+        tk.Entry(master, textvariable=self.fill_var).grid(row=3, column=1)
+        return master
+
+    def apply(self):
+        self.result = {
+            "text": self.text_var.get(),
+            "font": self.font_var.get(),
+            "font_size": self.size_var.get(),
+            "fill": self.fill_var.get()
+        }
 
 # ------------------------------------------------------------------------------
 # LAYER CLASS
@@ -57,8 +96,6 @@ class Layer:
 class ShapeData:
     """
     Stores data for each drawn shape.
-    For line-like shapes, an 'anchors' list holds indices into the coordinate list.
-    For groups, a 'children' list holds the member item IDs.
     """
     def __init__(self):
         self.shapes = {}
@@ -71,7 +108,7 @@ class ShapeData:
             'outline': outline,
             'width': width
         }
-        if shape_type in ("line", "brush", "bending_line"):
+        if shape_type in ("line", "brush", "bending_line", "editable_text"):
             self.shapes[item_id]['anchors'] = []
         if shape_type == "group":
             self.shapes[item_id]['children'] = []
@@ -92,8 +129,7 @@ class ShapeData:
 # ------------------------------------------------------------------------------
 class EditorHistory:
     """
-    Simple linear history for undo/redo. Each state is a tuple of
-    (copy of shape_data, copy of layers, description).
+    Simple linear history for undo/redo.
     """
     def __init__(self):
         self.states = []
@@ -146,18 +182,11 @@ class EditorHistory:
 # ------------------------------------------------------------------------------
 class SimpleImageEditor:
     """
-    The main editor class.
-    Features:
-      - Drawing basic shapes (line, rectangle, ellipse, brush, text)
-      - Anchor management (Direct Select and Add Anchor)
-      - Bending tools A (push/anchor drag), B (arc bend), and C (freeform bending line)
-      - Multi-selection and grouping (via Group or Ctrl+G)
-      - Auto-connection of nearby line endpoints
-      - Robust canvas saving
+    Main editor class with drawing and text editing features.
     """
     def __init__(self, root):
         self.root = root
-        root.title("Enhanced Editor with Anchors & Bending")
+        root.title("Enhanced Editor with Anchors, Bending & Editable Text")
         root.geometry("1400x900")
 
         self.shape_data = ShapeData()
@@ -173,7 +202,6 @@ class SimpleImageEditor:
         self.current_tool = None
         self.tool_buttons = {}
 
-        # For drawing shapes
         self.temp_item = None
         self.start_x = None
         self.start_y = None
@@ -181,7 +209,6 @@ class SimpleImageEditor:
         self.last_y = None
         self.select_rect_id = None
 
-        # Bend tools variables
         self.bendA_active = False
         self.bendB_active = False
         self.bend_dragging = False
@@ -191,12 +218,8 @@ class SimpleImageEditor:
         self.bendB_dragging_anchor_idx = None
         self.initial_angle = None
 
-        # Variables for Direct Select tool (for selecting anchor points)
         self.direct_select_dragging_anchor = None
         self.direct_select_drag_index = None
-
-        # Image references (to prevent GC)
-        self.loaded_images = {}
 
         self.history = EditorHistory()
 
@@ -210,7 +233,6 @@ class SimpleImageEditor:
         self.add_layer("Layer 1")
         self.push_history("Initial Setup")
 
-        # Bind keys (unused argument warnings are suppressed)
         self.root.bind("<Control-z>", self.on_ctrl_z)
         self.root.bind("<Control-y>", self.on_ctrl_y)
         self.root.bind("<Control-g>", self.group_selected_items)
@@ -239,7 +261,6 @@ class SimpleImageEditor:
             b.pack(pady=5, fill=tk.X)
             self.tool_buttons[tool] = b
         ttk.Button(self.toolbar_frame, text="Add Layer", command=self.add_layer).pack(pady=5, fill=tk.X)
-        # The "Open Image" button has been removed.
         ttk.Button(self.toolbar_frame, text="Save Canvas", command=self.save_canvas_snapshot).pack(pady=5, fill=tk.X)
 
     def select_tool(self, tool_name):
@@ -407,7 +428,6 @@ class SimpleImageEditor:
     def push_history(self, description):
         self.history.push_state(self.shape_data, self.layers, description)
         self.refresh_history_listbox()
-        # After each state change, auto-connect lines.
         self.auto_connect_lines()
 
     def refresh_history_listbox(self):
@@ -440,10 +460,10 @@ class SimpleImageEditor:
             self.refresh_history_listbox()
             self.history_listbox.selection_set(self.history.current_index)
 
-    def on_ctrl_z(self, event):  # pylint: disable=unused-argument
+    def on_ctrl_z(self, event):
         self.do_undo()
 
-    def on_ctrl_y(self, event):  # pylint: disable=unused-argument
+    def on_ctrl_y(self, event):
         self.do_redo()
 
     def apply_history_state(self, state):
@@ -465,14 +485,18 @@ class SimpleImageEditor:
             new_id = None
             if stype == "line":
                 new_id = self.canvas.create_line(*coords, fill=outl, width=wd,
-                                                 smooth=True, splinesteps=36)
+                                                   smooth=True, splinesteps=36)
             elif stype == "rectangle":
                 new_id = self.canvas.create_rectangle(*coords, outline=outl, fill=fill, width=wd)
             elif stype == "ellipse":
                 new_id = self.canvas.create_oval(*coords, outline=outl, fill=fill, width=wd)
-            elif stype in ("brush", "bending_line"):
-                new_id = self.canvas.create_line(*coords, fill=outl, width=wd,
-                                                 smooth=True, splinesteps=36)
+            elif stype == "editable_text":
+                props = sdata.get("text_props", {})
+                new_id = self.canvas.create_text(coords[0], coords[1],
+                                                 text=props.get("text", ""),
+                                                 fill=props.get("fill", self.stroke_color),
+                                                 font=(props.get("font", "Arial"), props.get("font_size", DEFAULT_FONT_SIZE)))
+                self.canvas.tag_bind(new_id, "<Double-Button-1>", lambda event, id=new_id: self.edit_text_item(id))
             elif stype == "text":
                 new_id = self.canvas.create_text(coords[0], coords[1], text="Sample", fill=outl)
             elif stype == "image":
@@ -511,6 +535,35 @@ class SimpleImageEditor:
                 for (iid, _) in lyr.items:
                     self.canvas.itemconfigure(iid, state=tk.HIDDEN)
 
+    # --------------------- EDITABLE TEXT METHODS -----------------------------
+    def create_editable_text(self, x, y):
+        dialog = TextEditorDialog(self.root, title="Create Text")
+        if dialog.result:
+            props = dialog.result
+            item = self.canvas.create_text(x, y, text=props["text"],
+                                           fill=props["fill"],
+                                           font=(props["font"], props["font_size"]))
+            # Use a simple approximate bounding box
+            self.shape_data.store(item, "editable_text", [x, y, x+100, y+30], None, props["fill"], 1)
+            self.shape_data.shapes[item]["text_props"] = props
+            self.canvas.tag_bind(item, "<Double-Button-1>", lambda event, id=item: self.edit_text_item(id))
+            if self.current_layer_index is not None:
+                self.layers[self.current_layer_index].add_item(item, "editable_text")
+            self.selected_items = {item}
+            self.highlight_selection()
+            self.push_history("Created editable text")
+
+    def edit_text_item(self, item):
+        props = self.shape_data.get(item).get("text_props", {})
+        dialog = TextEditorDialog(self.root, title="Edit Text", initial_props=props)
+        if dialog.result:
+            new_props = dialog.result
+            self.canvas.itemconfig(item, text=new_props["text"],
+                                   fill=new_props["fill"],
+                                   font=(new_props["font"], new_props["font_size"]))
+            self.shape_data.shapes[item]["text_props"] = new_props
+            self.push_history("Edited text")
+
     # --------------------- MOUSE EVENT METHODS -----------------------------
     def on_left_down(self, event):
         if self.current_layer_index is None:
@@ -525,7 +578,7 @@ class SimpleImageEditor:
         self.last_x, self.last_y = event.x, event.y
 
         if self.current_tool == "Select":
-            if event.state & 0x0001:  # Shift key held
+            if event.state & 0x0001:
                 self.handle_select_click(event.x, event.y, add=True)
             else:
                 self.handle_select_click(event.x, event.y, add=False)
@@ -542,25 +595,13 @@ class SimpleImageEditor:
         elif self.current_tool in ("Line", "Rectangle", "Ellipse"):
             self.temp_item = None
         elif self.current_tool == "Text":
-            txt = self.canvas.create_text(event.x, event.y, text="Sample",
-                                          fill=self.stroke_color, font=("Arial", self.font_size))
-            layer.add_item(txt, "text")
-            self.shape_data.store(txt, "text", [event.x, event.y],
-                                  self.stroke_color, self.stroke_color, 1)
-            self.selected_items = {txt}
-            self.highlight_selection()
-            self.push_history("Created text")
-        # Modified eraser handling:
+            self.create_editable_text(event.x, event.y)
         elif self.current_tool == "Sharp Eraser":
             it = self.canvas.find_closest(event.x, event.y)
             if it:
                 shape = self.shape_data.get(it[0])
                 if shape and shape['type'] in ("line", "brush", "bending_line"):
-                    # Use a smaller effective radius for sharp eraser
                     self.round_erase_anchor_points(it[0], event.x, event.y, radius=ERASER_RADIUS * 0.5)
-                else:
-                    # For other types, do nothing or optionally erase completely
-                    pass
                 self.push_history("Sharp Eraser used")
         elif self.current_tool == "Round Eraser":
             it = self.canvas.find_closest(event.x, event.y)
@@ -568,8 +609,6 @@ class SimpleImageEditor:
                 shape = self.shape_data.get(it[0])
                 if shape and shape['type'] in ("line", "brush", "bending_line"):
                     self.round_erase_anchor_points(it[0], event.x, event.y, radius=ERASER_RADIUS)
-                else:
-                    pass
                 self.push_history("Round Eraser used")
         elif self.current_tool == "Soft Eraser":
             it = self.canvas.find_closest(event.x, event.y)
@@ -676,7 +715,6 @@ class SimpleImageEditor:
 
     # --------------------- DIRECT SELECT METHODS ---------------------------
     def handle_direct_select_down(self, x, y):
-        # First, check if an anchor rectangle is clicked
         found = None
         if hasattr(self, "direct_select_anchors"):
             for (hid, sid, idx) in self.direct_select_anchors:
@@ -688,7 +726,6 @@ class SimpleImageEditor:
             self.direct_select_dragging_anchor = found
             self.direct_select_drag_index = found[1]
         else:
-            # If no anchor is hit, select the shape under the pointer and show its anchors
             it = self.canvas.find_closest(x, y)
             if it:
                 sid = it[0]
@@ -741,7 +778,6 @@ class SimpleImageEditor:
             pass
 
     # --------------------- OPEN / SAVE METHODS ----------------------------
-    # The open_image_layer method has been removed.
     def save_canvas_snapshot(self):
         fp = filedialog.asksaveasfilename(
             title="Save",
@@ -822,12 +858,10 @@ class SimpleImageEditor:
         self.temp_item = None
 
     # --------------------- ERASER METHODS ----------------------------------
-    # This function now takes an extra 'radius' parameter (defaulting to ERASER_RADIUS)
     def round_erase_anchor_points(self, item_id, ex, ey, radius=ERASER_RADIUS):
         shape = self.shape_data.get(item_id)
         if not shape:
             return
-        # Only operate on line-like shapes
         if shape['type'] not in ("line", "brush", "bending_line"):
             return
         coords = shape['coords']
@@ -835,11 +869,9 @@ class SimpleImageEditor:
         for i in range(0, len(coords), 2):
             if math.hypot(coords[i] - ex, coords[i + 1] - ey) >= radius:
                 new_coords.extend([coords[i], coords[i + 1]])
-        # If fewer than 2 points remain, remove the shape entirely
         if len(new_coords) < 4:
             self.erase_item(item_id)
             return
-        # Otherwise update the shape
         self.canvas.coords(item_id, *new_coords)
         self.shape_data.update_coords(item_id, new_coords)
 
@@ -869,7 +901,6 @@ class SimpleImageEditor:
         if new_fill:
             self.canvas.itemconfig(item_id, fill=new_fill)
 
-    # For non-erasing operations we use this helper:
     def erase_item(self, item_id):
         layer = self.find_layer_of_item(item_id)
         if layer:
@@ -927,8 +958,7 @@ class SimpleImageEditor:
                 self.canvas.move(item, dx, dy)
                 shape = self.shape_data.get(item)
                 if shape:
-                    new_coords = [coord + dx if i % 2 == 0 else coord + dy
-                                  for i, coord in enumerate(shape['coords'])]
+                    new_coords = [coord + dx if i % 2 == 0 else coord + dy for i, coord in enumerate(shape['coords'])]
                     self.canvas.coords(item, *new_coords)
                     self.shape_data.update_coords(item, new_coords)
             except Exception as e:
@@ -953,8 +983,7 @@ class SimpleImageEditor:
             x = coords[i]
             y = coords[i+1]
             color = "red" if i in anchors else "blue"
-            hid = self.canvas.create_rectangle(x - 3, y - 3, x + 3, y + 3,
-                                               fill=color, outline=color)
+            hid = self.canvas.create_rectangle(x - 3, y - 3, x + 3, y + 3, fill=color, outline=color)
             self.direct_select_anchors.append((hid, item_id, i))
 
     def update_direct_select_anchors(self, item_id):
@@ -979,7 +1008,7 @@ class SimpleImageEditor:
                 return (sid, idx)
         return None
 
-    def on_key_toggle_anchor(self, event):  # pylint: disable=unused-argument
+    def on_key_toggle_anchor(self, event):
         if self.current_tool == "Direct Select" and self.selected_items:
             for sid in self.selected_items:
                 shape = self.shape_data.get(sid)
@@ -1059,7 +1088,7 @@ class SimpleImageEditor:
         self.push_history("Added anchor")
 
     # --------------------- GROUPING METHODS -------------------------------
-    def group_selected_items(self, event=None):  # pylint: disable=unused-argument
+    def group_selected_items(self, event=None):
         if len(self.selected_items) < 2:
             return
         group_id = self.canvas.create_rectangle(0, 0, 0, 0, outline="purple", dash=(4, 2))
@@ -1317,67 +1346,7 @@ class SimpleImageEditor:
         projy = y1 + t * (y2 - y1)
         return math.hypot(px - projx, py - projy)
 
-    # --------------------- DRAW BENDING LINE (Tool C) METHODS ----------------
-    def handle_draw_bending_line_down(self, x, y):
-        self.temp_item = self.canvas.create_line(x, y, x, y,
-                                                  fill=self.stroke_color,
-                                                  width=self.brush_size,
-                                                  smooth=True, splinesteps=36)
-        if self.current_layer_index is None:
-            return
-        self.layers[self.current_layer_index].add_item(self.temp_item, "bending_line")
-        self.shape_data.store(self.temp_item, "bending_line", [x, y],
-                              None, self.stroke_color, self.brush_size)
-        self.shape_data.shapes[self.temp_item]['anchors'].append(0)
-        self.last_x, self.last_y = x, y
-
-    def handle_draw_bending_line_drag(self, x, y):
-        if self.temp_item is None:
-            return
-        coords = self.canvas.coords(self.temp_item)
-        coords.extend([x, y])
-        self.canvas.coords(self.temp_item, *coords)
-        self.shape_data.update_coords(self.temp_item, coords)
-        anchor_indices = self.shape_data.shapes[self.temp_item]['anchors']
-        if (len(coords) - 2) not in anchor_indices:
-            anchor_indices.append(len(coords) - 2)
-            anchor_indices.sort()
-        self.last_x, self.last_y = x, y
-
-    def handle_draw_bending_line_up(self):
-        if self.temp_item is None:
-            return
-        self.push_history("Drew bending line")
-        self.temp_item = None
-
-    # --------------------- SHAPE CREATION METHODS --------------------------
-    def create_brush_segment(self, x, y, layer):
-        ln = self.canvas.create_line(x, y, x + 1, y + 1,
-                                     fill=self.stroke_color,
-                                     width=self.brush_size,
-                                     smooth=True, splinesteps=36)
-        layer.add_item(ln, "brush")
-        self.shape_data.store(ln, "brush", [x, y, x + 1, y + 1],
-                              None, self.stroke_color, self.brush_size)
-        self.selected_items = {ln}
-        self.highlight_selection()
-
-    def finalize_shape_creation(self):
-        layer = self.layers[self.current_layer_index]
-        stype = self.current_tool.lower()
-        layer.add_item(self.temp_item, stype)
-        coords = self.canvas.coords(self.temp_item)
-        fill_val = None if stype == "line" else self.fill_color
-        self.shape_data.store(self.temp_item, stype, coords, fill_val, self.stroke_color, self.brush_size)
-        self.selected_items = {self.temp_item}
-        self.highlight_selection()
-        self.temp_item = None
-
-    # --------------------- MAIN -------------------------------
-    # (No changes in main block)
-    
 if __name__ == "__main__":
     root = tk.Tk()
     app = SimpleImageEditor(root)
     root.mainloop()
-
