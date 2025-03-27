@@ -3,7 +3,7 @@ from tkinter import ttk, filedialog, colorchooser, messagebox, simpledialog
 import copy
 import math
 
-# Attempt Pillow import for image support (still available for other parts if needed)
+# Attempt Pillow import for image support
 try:
     from PIL import Image, ImageTk, ImageDraw, ImageFont
     PIL_AVAILABLE = True
@@ -40,7 +40,6 @@ class TextEditorDialog(simpledialog.Dialog):
             "font": "Arial",
             "font_size": DEFAULT_FONT_SIZE,
             "fill": DEFAULT_STROKE_COLOR
-            # Rotation and vertical options omitted in this simpler version.
         }
         super().__init__(parent, title)
 
@@ -182,11 +181,11 @@ class EditorHistory:
 # ------------------------------------------------------------------------------
 class SimpleImageEditor:
     """
-    Main editor class with drawing and text editing features.
+    Main editor class with drawing, text editing, layering and image operations.
     """
     def __init__(self, root):
         self.root = root
-        root.title("Enhanced Editor with Anchors, Bending & Editable Text")
+        root.title("Enhanced Editor with Anchors, Bending, Editable Text & Image Editing")
         root.geometry("1400x900")
 
         self.shape_data = ShapeData()
@@ -222,6 +221,9 @@ class SimpleImageEditor:
         self.direct_select_drag_index = None
 
         self.history = EditorHistory()
+
+        # Dictionary to keep a reference to images (store tuples of (PIL_image, PhotoImage))
+        self.image_refs = {}
 
         self.build_frames()
         self.setup_toolbar()
@@ -260,7 +262,10 @@ class SimpleImageEditor:
                           command=lambda t=tool: self.select_tool(t))
             b.pack(pady=5, fill=tk.X)
             self.tool_buttons[tool] = b
+        # Extra buttons for image operations and layers
         ttk.Button(self.toolbar_frame, text="Add Layer", command=self.add_layer).pack(pady=5, fill=tk.X)
+        ttk.Button(self.toolbar_frame, text="Open Image", command=self.open_image).pack(pady=5, fill=tk.X)
+        ttk.Button(self.toolbar_frame, text="Rotate Image", command=self.rotate_image).pack(pady=5, fill=tk.X)
         ttk.Button(self.toolbar_frame, text="Save Canvas", command=self.save_canvas_snapshot).pack(pady=5, fill=tk.X)
 
     def select_tool(self, tool_name):
@@ -534,6 +539,61 @@ class SimpleImageEditor:
             if not lyr.visible:
                 for (iid, _) in lyr.items:
                     self.canvas.itemconfigure(iid, state=tk.HIDDEN)
+
+    # --------------------- IMAGE METHODS (New) -----------------------------
+    def open_image(self):
+        """Opens an image file using Pillow and places it on the canvas."""
+        if not PIL_AVAILABLE:
+            messagebox.showerror("Error", "Pillow is not installed.")
+            return
+        file_path = filedialog.askopenfilename(
+            title="Open Image",
+            filetypes=[("Image Files", ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif")), ("All Files", "*.*")]
+        )
+        if file_path:
+            try:
+                pil_image = Image.open(file_path)
+            except Exception as e:
+                messagebox.showerror("Error", f"Unable to open image: {e}")
+                return
+            tk_image = ImageTk.PhotoImage(pil_image)
+            # Create image item on canvas at top-left
+            item = self.canvas.create_image(0, 0, anchor="nw", image=tk_image)
+            # Store both the PIL image and the PhotoImage to avoid garbage collection
+            self.image_refs[item] = (pil_image, tk_image)
+            # Store shape data for the image
+            self.shape_data.store(item, "image", [0, 0, pil_image.width, pil_image.height], None, "", 0)
+            if self.current_layer_index is None:
+                self.add_layer("Image Layer")
+                self.current_layer_index = 0
+            self.layers[self.current_layer_index].add_item(item, "image")
+            self.push_history("Opened image")
+
+    def rotate_image(self):
+        """Rotates the selected image by an angle provided by the user."""
+        if not self.selected_items:
+            messagebox.showinfo("Info", "Please select an image first.")
+            return
+        item = next(iter(self.selected_items))
+        shape = self.shape_data.get(item)
+        if not shape or shape['type'] != "image":
+            messagebox.showinfo("Info", "Selected item is not an image.")
+            return
+        angle = simpledialog.askfloat("Rotate Image", "Enter rotation angle (degrees):", initialvalue=90)
+        if angle is None:
+            return
+        # Retrieve the current PIL image
+        stored = self.image_refs.get(item)
+        if not stored:
+            messagebox.showerror("Error", "No image found.")
+            return
+        pil_image, _ = stored
+        # Rotate the image using Pillow (expand to adjust the size)
+        rotated = pil_image.rotate(angle, expand=True)
+        new_tk_image = ImageTk.PhotoImage(rotated)
+        self.image_refs[item] = (rotated, new_tk_image)
+        self.canvas.itemconfig(item, image=new_tk_image)
+        self.push_history("Rotated image")
 
     # --------------------- EDITABLE TEXT METHODS -----------------------------
     def create_editable_text(self, x, y):
