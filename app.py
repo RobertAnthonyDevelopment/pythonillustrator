@@ -225,6 +225,9 @@ class SimpleImageEditor:
         # Dictionary to keep a reference to images (store tuples of (PIL_image, PhotoImage))
         self.image_refs = {}
 
+        # New attribute for polygon configuration
+        self.polygon_config = None
+
         self.build_frames()
         self.setup_toolbar()
         self.setup_canvas()
@@ -262,6 +265,12 @@ class SimpleImageEditor:
                           command=lambda t=tool: self.select_tool(t))
             b.pack(pady=5, fill=tk.X)
             self.tool_buttons[tool] = b
+        # Add new button for Polygon tool
+        poly_btn = tk.Button(self.toolbar_frame, text="Polygon",
+                             command=lambda: self.select_tool("Polygon"))
+        poly_btn.pack(pady=5, fill=tk.X)
+        self.tool_buttons["Polygon"] = poly_btn
+
         # Extra buttons for image operations and layers
         ttk.Button(self.toolbar_frame, text="Add Layer", command=self.add_layer).pack(pady=5, fill=tk.X)
         ttk.Button(self.toolbar_frame, text="Open Image", command=self.open_image).pack(pady=5, fill=tk.X)
@@ -287,6 +296,9 @@ class SimpleImageEditor:
         for n, btn in self.tool_buttons.items():
             btn.config(relief=tk.SUNKEN if n == tool_name else tk.RAISED,
                        bg=("#a0cfe6" if n == tool_name else "SystemButtonFace"))
+        # Reset polygon configuration when switching tools
+        if tool_name != "Polygon":
+            self.polygon_config = None
 
     def setup_canvas(self):
         self.canvas = tk.Canvas(self.main_frame, bg="white", cursor="cross")
@@ -652,6 +664,19 @@ class SimpleImageEditor:
             self.handle_draw_bending_line_down(event.x, event.y)
         elif self.current_tool == "Brush":
             self.create_brush_segment(event.x, event.y, layer)
+        elif self.current_tool == "Polygon":
+            if not self.polygon_config:
+                sides = simpledialog.askinteger("Polygon Sides", "Enter number of sides:", initialvalue=5, minvalue=3)
+                fill_enabled = messagebox.askyesno("Polygon Fill", "Fill polygon? (Yes for filled, No for stroke only)")
+                self.polygon_config = {"sides": sides, "fill": fill_enabled}
+            self.start_x, self.start_y = event.x, event.y
+            self.last_x, self.last_y = event.x, event.y
+            self.temp_item = self.canvas.create_polygon(event.x, event.y, event.x, event.y,
+                                                         outline=self.stroke_color,
+                                                         fill=(self.fill_color if self.polygon_config["fill"] else ""),
+                                                         width=self.brush_size)
+            if self.current_layer_index is not None:
+                self.layers[self.current_layer_index].add_item(self.temp_item, "polygon")
         elif self.current_tool in ("Line", "Rectangle", "Ellipse"):
             self.temp_item = None
         elif self.current_tool == "Text":
@@ -712,28 +737,39 @@ class SimpleImageEditor:
                 self.selected_items = {ln}
                 self.highlight_selection()
                 self.last_x, self.last_y = event.x, event.y
-        elif self.current_tool == "Line":
+        elif self.current_tool == "Polygon":
+            if self.temp_item:
+                dx = event.x - self.start_x
+                dy = event.y - self.start_y
+                radius = math.hypot(dx, dy)
+                sides = self.polygon_config["sides"]
+                angle_offset = -math.pi/2  # so one vertex is at the top
+                coords = []
+                for i in range(sides):
+                    angle = angle_offset + 2 * math.pi * i / sides
+                    x = self.start_x + radius * math.cos(angle)
+                    y = self.start_y + radius * math.sin(angle)
+                    coords.extend([x, y])
+                self.canvas.coords(self.temp_item, *coords)
+        elif self.current_tool in ("Line", "Rectangle", "Ellipse"):
             if self.temp_item:
                 self.canvas.delete(self.temp_item)
-            self.temp_item = self.canvas.create_line(self.start_x, self.start_y, event.x, event.y,
-                                                      fill=self.stroke_color, width=self.brush_size,
-                                                      smooth=True, splinesteps=36)
-        elif self.current_tool == "Rectangle":
-            if self.temp_item:
-                self.canvas.delete(self.temp_item)
-            x1, y1, x2, y2 = self.normalize_rect([self.start_x, self.start_y, event.x, event.y])
-            self.temp_item = self.canvas.create_rectangle(x1, y1, x2, y2,
-                                                          outline=self.stroke_color,
-                                                          fill=self.fill_color,
-                                                          width=self.brush_size)
-        elif self.current_tool == "Ellipse":
-            if self.temp_item:
-                self.canvas.delete(self.temp_item)
-            x1, y1, x2, y2 = self.normalize_rect([self.start_x, self.start_y, event.x, event.y])
-            self.temp_item = self.canvas.create_oval(x1, y1, x2, y2,
-                                                     outline=self.stroke_color,
-                                                     fill=self.fill_color,
-                                                     width=self.brush_size)
+            if self.current_tool == "Line":
+                self.temp_item = self.canvas.create_line(self.start_x, self.start_y, event.x, event.y,
+                                                          fill=self.stroke_color, width=self.brush_size,
+                                                          smooth=True, splinesteps=36)
+            elif self.current_tool == "Rectangle":
+                x1, y1, x2, y2 = self.normalize_rect([self.start_x, self.start_y, event.x, event.y])
+                self.temp_item = self.canvas.create_rectangle(x1, y1, x2, y2,
+                                                              outline=self.stroke_color,
+                                                              fill=self.fill_color,
+                                                              width=self.brush_size)
+            elif self.current_tool == "Ellipse":
+                x1, y1, x2, y2 = self.normalize_rect([self.start_x, self.start_y, event.x, event.y])
+                self.temp_item = self.canvas.create_oval(x1, y1, x2, y2,
+                                                         outline=self.stroke_color,
+                                                         fill=self.fill_color,
+                                                         width=self.brush_size)
 
     def on_left_up(self, event):
         if self.current_tool == "Select":
@@ -768,6 +804,16 @@ class SimpleImageEditor:
         elif self.current_tool == "Bend Tool C":
             self.handle_draw_bending_line_up()
             self.push_history("Created bending line")
+            return
+        elif self.current_tool == "Polygon":
+            if self.temp_item:
+                coords = self.canvas.coords(self.temp_item)
+                fill_val = self.fill_color if self.polygon_config["fill"] else ""
+                self.shape_data.store(self.temp_item, "polygon", coords, fill_val, self.stroke_color, self.brush_size)
+                self.selected_items = {self.temp_item}
+                self.highlight_selection()
+                self.push_history("Created Polygon")
+                self.temp_item = None
             return
         if self.temp_item and self.current_tool in ("Line", "Rectangle", "Ellipse"):
             self.finalize_shape_creation()
