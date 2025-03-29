@@ -31,6 +31,51 @@ BEND_RADIUS_B = 50.0   # Tool B: arc-based bending
 CONNECT_THRESHOLD = 10
 
 # ------------------------------------------------------------------------------
+# HELPER FUNCTION: Apply opacity (simulate transparency by blending with white)
+# ------------------------------------------------------------------------------
+def apply_opacity(color, opacity):
+    if not color:
+        return ""
+    # color is expected in "#RRGGBB" format
+    r = int(color[1:3], 16)
+    g = int(color[3:5], 16)
+    b = int(color[5:7], 16)
+    # Blend with white background (assumed background is white)
+    new_r = int(opacity * r + (1 - opacity) * 255)
+    new_g = int(opacity * g + (1 - opacity) * 255)
+    new_b = int(opacity * b + (1 - opacity) * 255)
+    return f"#{new_r:02x}{new_g:02x}{new_b:02x}"
+
+# ------------------------------------------------------------------------------
+# RECOLOR DIALOG CLASS
+# ------------------------------------------------------------------------------
+class RecolorDialog(simpledialog.Dialog):
+    def __init__(self, parent, title="Recolor Shape", initial_props=None):
+        self.initial_props = initial_props or {"stroke": DEFAULT_STROKE_COLOR, "fill": DEFAULT_FILL_COLOR, "opacity": 1.0}
+        super().__init__(parent, title)
+
+    def body(self, master):
+        tk.Label(master, text="Stroke Color:").grid(row=0, column=0, sticky="w")
+        self.stroke_var = tk.StringVar(value=self.initial_props["stroke"])
+        tk.Entry(master, textvariable=self.stroke_var).grid(row=0, column=1)
+        
+        tk.Label(master, text="Fill Color:").grid(row=1, column=0, sticky="w")
+        self.fill_var = tk.StringVar(value=self.initial_props["fill"])
+        tk.Entry(master, textvariable=self.fill_var).grid(row=1, column=1)
+        
+        tk.Label(master, text="Opacity (0-1):").grid(row=2, column=0, sticky="w")
+        self.opacity_var = tk.DoubleVar(value=self.initial_props["opacity"])
+        tk.Entry(master, textvariable=self.opacity_var).grid(row=2, column=1)
+        return master
+
+    def apply(self):
+        self.result = {
+            "stroke": self.stroke_var.get(),
+            "fill": self.fill_var.get(),
+            "opacity": self.opacity_var.get()
+        }
+
+# ------------------------------------------------------------------------------
 # TEXT EDITOR DIALOG CLASS
 # ------------------------------------------------------------------------------
 class TextEditorDialog(simpledialog.Dialog):
@@ -105,7 +150,8 @@ class ShapeData:
             'coords': coords[:],
             'fill': fill,
             'outline': outline,
-            'width': width
+            'width': width,
+            'opacity': 1.0  # default opacity is 1 (fully opaque)
         }
         if shape_type in ("line", "brush", "bending_line", "editable_text"):
             self.shapes[item_id]['anchors'] = []
@@ -228,9 +274,8 @@ class SimpleImageEditor:
         # Dictionary to keep a reference to images (store tuples of (PIL_image, PhotoImage))
         self.image_refs = {}
 
-        # New attribute for polygon configuration
+        # New attributes for polygon and star configuration
         self.polygon_config = None
-        # New attribute for star configuration
         self.star_config = None
 
         self.build_frames()
@@ -246,7 +291,7 @@ class SimpleImageEditor:
         self.root.bind("<Control-z>", self.on_ctrl_z)
         self.root.bind("<Control-y>", self.on_ctrl_y)
         self.root.bind("<Control-g>", self.group_selected_items)
-        # Bind keyboard shortcuts to change fill and stroke color of selected shapes
+        # Keyboard shortcuts for recoloring selected shapes
         self.root.bind("<Control-f>", self.change_fill_color_selected)
         self.root.bind("<Control-s>", self.change_stroke_color_selected)
         self.canvas.bind("<KeyPress-a>", self.on_key_toggle_anchor)
@@ -283,6 +328,11 @@ class SimpleImageEditor:
                              command=lambda: self.select_tool("Star"))
         star_btn.pack(pady=5, fill=tk.X)
         self.tool_buttons["Star"] = star_btn
+        # Add new button for Recolor tool
+        recolor_btn = tk.Button(self.toolbar_frame, text="Recolor",
+                             command=lambda: self.select_tool("Recolor"))
+        recolor_btn.pack(pady=5, fill=tk.X)
+        self.tool_buttons["Recolor"] = recolor_btn
 
         # Extra buttons for image operations and layers
         ttk.Button(self.toolbar_frame, text="Add Layer", command=self.add_layer).pack(pady=5, fill=tk.X)
@@ -654,7 +704,7 @@ class SimpleImageEditor:
             self.shape_data.shapes[item]["text_props"] = new_props
             self.push_history("Edited text")
 
-    # --------------------- KEYBOARD SHORTCUTS FOR COLOR CHANGES ----------------
+    # --------------------- KEYBOARD SHORTCUTS FOR RECOLORING ----------------
     def change_fill_color_selected(self, event):
         new_color = colorchooser.askcolor(title="Select new fill color", initialcolor=self.fill_color)[1]
         if new_color:
@@ -662,7 +712,8 @@ class SimpleImageEditor:
                 shape = self.shape_data.get(item)
                 if shape and shape['type'] not in ("line", "brush", "bending_line", "group", "image"):
                     shape['fill'] = new_color
-                    self.canvas.itemconfig(item, fill=new_color)
+                    effective = apply_opacity(new_color, shape.get("opacity", 1))
+                    self.canvas.itemconfig(item, fill=effective)
             self.push_history("Changed fill color of selected shapes")
 
     def change_stroke_color_selected(self, event):
@@ -672,7 +723,8 @@ class SimpleImageEditor:
                 shape = self.shape_data.get(item)
                 if shape:
                     shape['outline'] = new_color
-                    self.canvas.itemconfig(item, outline=new_color)
+                    effective = apply_opacity(new_color, shape.get("opacity", 1))
+                    self.canvas.itemconfig(item, outline=effective)
             self.push_history("Changed stroke color of selected shapes")
 
     # --------------------- MOUSE EVENT METHODS -----------------------------
@@ -727,6 +779,29 @@ class SimpleImageEditor:
                                                          width=self.brush_size)
             if self.current_layer_index is not None:
                 self.layers[self.current_layer_index].add_item(self.temp_item, "star")
+        elif self.current_tool == "Recolor":
+            it = self.canvas.find_closest(event.x, event.y)
+            if it:
+                iid = it[0]
+                self.selected_items = {iid}
+                self.highlight_selection()
+                current_shape = self.shape_data.get(iid)
+                initial = {
+                    "stroke": current_shape.get("outline", self.stroke_color),
+                    "fill": current_shape.get("fill", self.fill_color),
+                    "opacity": current_shape.get("opacity", 1)
+                }
+                dialog = RecolorDialog(self.root, initial_props=initial)
+                if dialog.result:
+                    res = dialog.result
+                    current_shape["outline"] = res["stroke"]
+                    current_shape["fill"] = res["fill"]
+                    current_shape["opacity"] = res["opacity"]
+                    effective_fill = apply_opacity(current_shape["fill"], current_shape["opacity"]) if current_shape["fill"] else ""
+                    effective_stroke = apply_opacity(current_shape["outline"], current_shape["opacity"]) if current_shape["outline"] else ""
+                    self.canvas.itemconfig(iid, fill=effective_fill, outline=effective_stroke)
+                    self.push_history("Recolored shape")
+            return
         elif self.current_tool in ("Line", "Rectangle", "Ellipse"):
             self.temp_item = None
         elif self.current_tool == "Text":
@@ -1533,3 +1608,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = SimpleImageEditor(root)
     root.mainloop()
+
