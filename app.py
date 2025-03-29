@@ -198,6 +198,9 @@ class SimpleImageEditor:
         self.fill_color = DEFAULT_FILL_COLOR
         self.font_size = DEFAULT_FONT_SIZE
 
+        # Global toggle for fill on/off
+        self.fill_enabled_var = tk.BooleanVar(value=True)
+
         self.current_tool = None
         self.tool_buttons = {}
 
@@ -227,6 +230,8 @@ class SimpleImageEditor:
 
         # New attribute for polygon configuration
         self.polygon_config = None
+        # New attribute for star configuration
+        self.star_config = None
 
         self.build_frames()
         self.setup_toolbar()
@@ -241,6 +246,9 @@ class SimpleImageEditor:
         self.root.bind("<Control-z>", self.on_ctrl_z)
         self.root.bind("<Control-y>", self.on_ctrl_y)
         self.root.bind("<Control-g>", self.group_selected_items)
+        # Bind keyboard shortcuts to change fill and stroke color of selected shapes
+        self.root.bind("<Control-f>", self.change_fill_color_selected)
+        self.root.bind("<Control-s>", self.change_stroke_color_selected)
         self.canvas.bind("<KeyPress-a>", self.on_key_toggle_anchor)
         self.canvas.focus_set()
 
@@ -270,6 +278,11 @@ class SimpleImageEditor:
                              command=lambda: self.select_tool("Polygon"))
         poly_btn.pack(pady=5, fill=tk.X)
         self.tool_buttons["Polygon"] = poly_btn
+        # Add new button for Star tool
+        star_btn = tk.Button(self.toolbar_frame, text="Star",
+                             command=lambda: self.select_tool("Star"))
+        star_btn.pack(pady=5, fill=tk.X)
+        self.tool_buttons["Star"] = star_btn
 
         # Extra buttons for image operations and layers
         ttk.Button(self.toolbar_frame, text="Add Layer", command=self.add_layer).pack(pady=5, fill=tk.X)
@@ -296,9 +309,11 @@ class SimpleImageEditor:
         for n, btn in self.tool_buttons.items():
             btn.config(relief=tk.SUNKEN if n == tool_name else tk.RAISED,
                        bg=("#a0cfe6" if n == tool_name else "SystemButtonFace"))
-        # Reset polygon configuration when switching tools
+        # Reset polygon and star configuration when switching tools
         if tool_name != "Polygon":
             self.polygon_config = None
+        if tool_name != "Star":
+            self.star_config = None
 
     def setup_canvas(self):
         self.canvas = tk.Canvas(self.main_frame, bg="white", cursor="cross")
@@ -316,6 +331,9 @@ class SimpleImageEditor:
         tk.Label(f, text="Fill:").pack(side=tk.LEFT, padx=5)
         self.fill_btn = tk.Button(f, bg=self.fill_color, width=3, command=self.pick_fill_color)
         self.fill_btn.pack(side=tk.LEFT, padx=5)
+        # New checkbutton for global fill enabled toggle
+        self.fill_toggle = ttk.Checkbutton(f, text="Fill", variable=self.fill_enabled_var)
+        self.fill_toggle.pack(side=tk.LEFT, padx=5)
         tk.Label(f, text="Brush Size:").pack(side=tk.LEFT, padx=5)
         self.brush_size_slider = ttk.Scale(f, from_=1, to=50, orient=tk.HORIZONTAL, command=self.on_brush_size_change)
         self.brush_size_slider.set(self.brush_size)
@@ -636,6 +654,27 @@ class SimpleImageEditor:
             self.shape_data.shapes[item]["text_props"] = new_props
             self.push_history("Edited text")
 
+    # --------------------- KEYBOARD SHORTCUTS FOR COLOR CHANGES ----------------
+    def change_fill_color_selected(self, event):
+        new_color = colorchooser.askcolor(title="Select new fill color", initialcolor=self.fill_color)[1]
+        if new_color:
+            for item in self.selected_items:
+                shape = self.shape_data.get(item)
+                if shape and shape['type'] not in ("line", "brush", "bending_line", "group", "image"):
+                    shape['fill'] = new_color
+                    self.canvas.itemconfig(item, fill=new_color)
+            self.push_history("Changed fill color of selected shapes")
+
+    def change_stroke_color_selected(self, event):
+        new_color = colorchooser.askcolor(title="Select new stroke color", initialcolor=self.stroke_color)[1]
+        if new_color:
+            for item in self.selected_items:
+                shape = self.shape_data.get(item)
+                if shape:
+                    shape['outline'] = new_color
+                    self.canvas.itemconfig(item, outline=new_color)
+            self.push_history("Changed stroke color of selected shapes")
+
     # --------------------- MOUSE EVENT METHODS -----------------------------
     def on_left_down(self, event):
         if self.current_layer_index is None:
@@ -667,16 +706,27 @@ class SimpleImageEditor:
         elif self.current_tool == "Polygon":
             if not self.polygon_config:
                 sides = simpledialog.askinteger("Polygon Sides", "Enter number of sides:", initialvalue=5, minvalue=3)
-                fill_enabled = messagebox.askyesno("Polygon Fill", "Fill polygon? (Yes for filled, No for stroke only)")
-                self.polygon_config = {"sides": sides, "fill": fill_enabled}
+                self.polygon_config = {"sides": sides}
             self.start_x, self.start_y = event.x, event.y
             self.last_x, self.last_y = event.x, event.y
             self.temp_item = self.canvas.create_polygon(event.x, event.y, event.x, event.y,
                                                          outline=self.stroke_color,
-                                                         fill=(self.fill_color if self.polygon_config["fill"] else ""),
+                                                         fill=(self.fill_color if self.fill_enabled_var.get() else ""),
                                                          width=self.brush_size)
             if self.current_layer_index is not None:
                 self.layers[self.current_layer_index].add_item(self.temp_item, "polygon")
+        elif self.current_tool == "Star":
+            if not self.star_config:
+                points = simpledialog.askinteger("Star Points", "Enter number of star points:", initialvalue=5, minvalue=2)
+                self.star_config = {"points": points}
+            self.start_x, self.start_y = event.x, event.y
+            self.last_x, self.last_y = event.x, event.y
+            self.temp_item = self.canvas.create_polygon(event.x, event.y, event.x, event.y,
+                                                         outline=self.stroke_color,
+                                                         fill=(self.fill_color if self.fill_enabled_var.get() else ""),
+                                                         width=self.brush_size)
+            if self.current_layer_index is not None:
+                self.layers[self.current_layer_index].add_item(self.temp_item, "star")
         elif self.current_tool in ("Line", "Rectangle", "Ellipse"):
             self.temp_item = None
         elif self.current_tool == "Text":
@@ -751,6 +801,22 @@ class SimpleImageEditor:
                     y = self.start_y + radius * math.sin(angle)
                     coords.extend([x, y])
                 self.canvas.coords(self.temp_item, *coords)
+        elif self.current_tool == "Star":
+            if self.temp_item:
+                dx = event.x - self.start_x
+                dy = event.y - self.start_y
+                outer_radius = math.hypot(dx, dy)
+                inner_radius = outer_radius * 0.5  # fixed ratio for inner points
+                points = self.star_config["points"]
+                angle_offset = -math.pi/2  # so one outer vertex is at the top
+                vertices = []
+                for i in range(2 * points):
+                    angle = angle_offset + i * math.pi / points
+                    r = outer_radius if i % 2 == 0 else inner_radius
+                    x = self.start_x + r * math.cos(angle)
+                    y = self.start_y + r * math.sin(angle)
+                    vertices.extend([x, y])
+                self.canvas.coords(self.temp_item, *vertices)
         elif self.current_tool in ("Line", "Rectangle", "Ellipse"):
             if self.temp_item:
                 self.canvas.delete(self.temp_item)
@@ -762,13 +828,13 @@ class SimpleImageEditor:
                 x1, y1, x2, y2 = self.normalize_rect([self.start_x, self.start_y, event.x, event.y])
                 self.temp_item = self.canvas.create_rectangle(x1, y1, x2, y2,
                                                               outline=self.stroke_color,
-                                                              fill=self.fill_color,
+                                                              fill=(self.fill_color if self.fill_enabled_var.get() else ""),
                                                               width=self.brush_size)
             elif self.current_tool == "Ellipse":
                 x1, y1, x2, y2 = self.normalize_rect([self.start_x, self.start_y, event.x, event.y])
                 self.temp_item = self.canvas.create_oval(x1, y1, x2, y2,
                                                          outline=self.stroke_color,
-                                                         fill=self.fill_color,
+                                                         fill=(self.fill_color if self.fill_enabled_var.get() else ""),
                                                          width=self.brush_size)
 
     def on_left_up(self, event):
@@ -808,12 +874,23 @@ class SimpleImageEditor:
         elif self.current_tool == "Polygon":
             if self.temp_item:
                 coords = self.canvas.coords(self.temp_item)
-                fill_val = self.fill_color if self.polygon_config["fill"] else ""
+                fill_val = self.fill_color if self.fill_enabled_var.get() else ""
                 self.shape_data.store(self.temp_item, "polygon", coords, fill_val, self.stroke_color, self.brush_size)
                 self.selected_items = {self.temp_item}
                 self.highlight_selection()
                 self.push_history("Created Polygon")
                 self.temp_item = None
+            return
+        elif self.current_tool == "Star":
+            if self.temp_item:
+                coords = self.canvas.coords(self.temp_item)
+                fill_val = self.fill_color if self.fill_enabled_var.get() else ""
+                self.shape_data.store(self.temp_item, "star", coords, fill_val, self.stroke_color, self.brush_size)
+                self.selected_items = {self.temp_item}
+                self.highlight_selection()
+                self.push_history("Created Star")
+                self.temp_item = None
+                self.star_config = None
             return
         if self.temp_item and self.current_tool in ("Line", "Rectangle", "Ellipse"):
             self.finalize_shape_creation()
@@ -957,7 +1034,7 @@ class SimpleImageEditor:
         stype = self.current_tool.lower()
         layer.add_item(self.temp_item, stype)
         coords = self.canvas.coords(self.temp_item)
-        fill_val = None if stype == "line" else self.fill_color
+        fill_val = None if stype == "line" else (self.fill_color if self.fill_enabled_var.get() else "")
         self.shape_data.store(self.temp_item, stype, coords, fill_val, self.stroke_color, self.brush_size)
         self.selected_items = {self.temp_item}
         self.highlight_selection()
